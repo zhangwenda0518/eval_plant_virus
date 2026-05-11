@@ -1,0 +1,535 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+👑 Virome Benchmarker Ultimate (宏基因组基准测试 终极融合版)
+特性: 
+  1. 基于 Fold Coverage (-f) 彻底防范多碎片宿主导致的数据爆炸 (6.9TB Bug Fix)。
+  2. 智能任务切片(单大文件满载并发), 极限榨干 CPU 性能。
+  3. 完美断点续传 (--resume) 与原子写入。
+  4. 🛡️【终极防弹突变引擎】利用替身机制彻底绕过 mutation-simulator 的输出路径 Bug。
+"""
+
+import os
+import sys
+import time
+import math
+import random
+import shutil
+import argparse
+import subprocess
+import glob
+from concurrent.futures import ThreadPoolExecutor
+
+try:
+    import resource
+    HAS_RESOURCE = True
+except ImportError:
+    HAS_RESOURCE = False
+
+# ==========================================
+# 工具 1：性能与内存监控器
+# ==========================================
+class PerformanceMonitor:
+    def __init__(self):
+        self.start_time = time.time()
+        
+    def report(self):
+        elapsed = time.time() - self.start_time
+        m, s = divmod(elapsed, 60)
+        h, m = divmod(m, 60)
+        time_str = f"{int(h)}小时 {int(m)}分钟 {int(s)}秒" if h > 0 else f"{int(m)}分钟 {int(s)}秒"
+        
+        print("\n" + "═"*50)
+        print("📊 运行性能监控报告 (Performance Report)")
+        print("═"*50)
+        print(f"⏱️  总耗时: {time_str}")
+        
+        if HAS_RESOURCE:
+            is_mac = sys.platform == 'darwin'
+            factor = 1024 * 1024 if is_mac else 1024
+            mem_self = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / factor
+            mem_children = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / factor
+            print(f"🧠 Python 主进程峰值内存: {mem_self:.2f} MB")
+            print(f"🧬 外部工具(子进程)最高峰值内存: {mem_children:.2f} MB")
+        print("═"*50 + "\n")
+
+# ==========================================
+# 工具 2：智能参数解析
+# ==========================================
+def parse_number(val_str):
+    s = str(val_str).strip().upper()
+    try:
+        if s.endswith('M'): return int(float(s[:-1]) * 1_000_000)
+        elif s.endswith('K'): return int(float(s[:-1]) * 1_000)
+        else: return int(float(s))
+    except ValueError:
+        print(f"❌ 错误: 无法将 '{val_str}' 解析为有效的数字。")
+        sys.exit(1)
+
+def parse_mut_rates(rates_list):
+    result = []
+    if not rates_list: return result
+    for item in rates_list:
+        for x in str(item).split(','):
+            if x.strip(): result.append(float(x.strip()))
+    return result
+
+def resolve_targets(indir, targets_input):
+    valid_exts = ('.fa', '.fasta', '.fna')
+    all_files = [f for f in os.listdir(indir) if f.endswith(valid_exts)]
+    if not targets_input or targets_input.lower() == 'all':
+        return [os.path.join(indir, f) for f in all_files]
+        
+    resolved_paths = []
+    for t in str(targets_input).split(','):
+        t = t.strip()
+        if not t: continue
+        target_path = os.path.join(indir, t)
+        if os.path.exists(target_path) and target_path.endswith(valid_exts):
+            resolved_paths.append(target_path)
+            continue
+        found = False
+        for ext in valid_exts:
+            if os.path.exists(target_path + ext):
+                resolved_paths.append(target_path + ext)
+                found = True
+                break
+        if not found: print(f"⚠️ 警告: 找不到目标病毒 '{t}'，将跳过。")
+    return resolved_paths
+
+def is_done(files):
+    if not files: return False
+    return all(os.path.exists(f) and os.path.getsize(f) > 20 for f in files)
+
+def load_config(config_path):
+    config = {}
+    with open(config_path, 'r') as f:
+        for line in f:
+            if line.strip() and not line.startswith('#'):
+                k, v = line.strip().split('\t')
+                config[k] = int(v)
+    return config
+
+# ==========================================
+# 工具 3：原子执行与系统命令
+# ==========================================
+def run_cmd(cmd):
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as e:
+        print(f"\n❌ 命令执行失败:\n{' '.join(cmd)}")
+        print(f"错误信息: {e.stderr.decode('utf-8')}")
+        sys.exit(1)
+
+def run_shuffle_atomic(infile, seed, outfile):
+    """
+    原子化洗牌写入：防止中断导致的残缺文件。
+    【核心修复】: 临时文件的后缀必须保留 .gz 才能触发 seqkit 的自动压缩流！
+    """
+    # 如果目标是 .gz，临时文件也必须以 .gz 结尾
+    if outfile.endswith(".gz"):
+        tmp_out = f"{outfile}.tmp.gz"
+    else:
+        tmp_out = f"{outfile}.tmp"
+
+    run_cmd(["seqkit", "shuffle", "-s", str(seed), infile, "-o", tmp_out])
+    os.rename(tmp_out, outfile)
+
+def check_dependencies(require_mut=False):
+    missing = [t for t in ["art_illumina", "seqkit"] if not shutil.which(t)]
+    if require_mut and not shutil.which("mutation-simulator"): missing.append("mutation-simulator")
+    if missing:
+        print("❌ 缺少必要的生信依赖工具: " + ", ".join(missing))
+        sys.exit(1)
+
+def concat_files_binary(input_files, output_file):
+    with open(output_file, 'wb') as outfile:
+        for fname in input_files:
+            if not os.path.exists(fname): continue
+            with open(fname, 'rb') as infile:
+                shutil.copyfileobj(infile, outfile)
+
+def get_fasta_length(fasta_path):
+    return sum(len(line.strip()) for line in open(fasta_path) if not line.startswith('>'))
+
+# ==========================================
+# 核心 API 库 (终极防弹机制加持)
+# ==========================================
+def api_mutate(indir, outdir, rate, resume=False):
+    os.makedirs(outdir, exist_ok=True)
+    genomes = [f for f in os.listdir(indir) if f.endswith(('.fa', '.fasta', '.fna'))]
+    path_map = {}
+    print(f"  -> [Mutate] 生成突变基因组 (Rate: {rate}%)...")
+    
+    skipped = 0
+    for genome in genomes:
+        in_path = os.path.join(indir, genome)
+        base = os.path.splitext(genome)[0]
+        final_path = os.path.join(outdir, f"{base}_mut_{rate}pct.fa")
+        
+        path_map[in_path] = final_path
+        
+        if resume and os.path.exists(final_path) and os.path.getsize(final_path) > 10:
+            skipped += 1
+            continue
+            
+        # 🛡️【终极防弹替身机制】：彻底抛弃有 Bug 的 -o 参数
+        # 1. 把源文件拷贝到输出目录，改名为 tmp_in_xxxx.fa
+        tmp_in = os.path.join(outdir, f"tmp_in_{genome}")
+        shutil.copy(in_path, tmp_in)
+        
+        # 2. 执行突变，不加 -o，让工具使用默认原地输出策略
+        cmd = ["mutation-simulator", tmp_in, "args", "-sn", str(rate/100.0), "-in", "0.001"]
+        run_cmd(cmd)
+        
+        # 3. 工具默认会在输入文件旁边生成 tmp_in_xxxx_mutated.fasta
+        tmp_base = os.path.splitext(f"tmp_in_{genome}")[0]
+        expected_out = os.path.join(outdir, f"{tmp_base}_mutated.fasta")
+        
+        if os.path.exists(expected_out):
+            shutil.move(expected_out, final_path)
+        else:
+            # 盲搜后备方案
+            found = glob.glob(os.path.join(outdir, f"{tmp_base}*"))
+            if found:
+                shutil.move(found[0], final_path)
+            else:
+                print(f"❌ 严重错误: 突变模拟器彻底失败！请检查工具是否安装正确。")
+                sys.exit(1)
+                
+        # 4. 清理替身和伴随的日志文件
+        if os.path.exists(tmp_in): os.remove(tmp_in)
+        txt_log = os.path.join(outdir, f"{tmp_base}_mutated_mutations.txt")
+        if os.path.exists(txt_log): os.remove(txt_log)
+            
+    if skipped > 0: print(f"  ⏭️ [断点续传] 已跳过 {skipped} 个完整存在的突变基因组")
+    return path_map
+
+def api_gen_config(indir, read_len, depth=None, total_reads=None):
+    genomes = [os.path.join(indir, f) for f in os.listdir(indir) if f.endswith(('.fa', '.fasta', '.fna'))]
+    config_dict = {}
+    if depth:
+        for g in genomes:
+            r = math.ceil((depth * get_fasta_length(g)) / read_len)
+            config_dict[g] = r + 1 if r % 2 != 0 else r
+    elif total_reads:
+        weights = [random.lognormvariate(0, 1.5) for _ in range(len(genomes))]
+        norm = [w / sum(weights) for w in weights]
+        allocated = 0
+        for i, g in enumerate(genomes):
+            r = total_reads - allocated if i == len(genomes)-1 else int(total_reads * norm[i])
+            r = r + 1 if r % 2 != 0 else r
+            config_dict[g] = r
+            allocated += r
+    return config_dict
+
+def api_run_sim(config_dict, out_prefix, mode, read_len, profile, seed, threads, frag_mean=300, frag_std=50, resume=False):
+    final_r1 = f"{out_prefix}_PE_R1.fastq.gz" if mode == "PE" else f"{out_prefix}_SE.fastq.gz"
+    final_r2 = f"{out_prefix}_PE_R2.fastq.gz" if mode == "PE" else None
+    
+    if resume and is_done([final_r1, final_r2] if mode == "PE" else [final_r1]):
+        print(f"  ⏭️ [断点续传] 母本数据已存在，跳过测序: {os.path.basename(final_r1)}")
+        return final_r1, final_r2
+
+    tmp_dir = f"{out_prefix}_tmp_ART"
+    os.makedirs(tmp_dir, exist_ok=True)
+    print(f"  -> [ART] 并发测序模拟 ({threads} 线程) ...")
+    
+    def run_art_chunk(task_args):
+        ref, fold_cov, chunk_id = task_args
+        base = os.path.splitext(os.path.basename(ref))[0]
+        out_base = os.path.join(tmp_dir, f"{base}_chunk{chunk_id}_")
+        
+        art_seed = (seed + chunk_id * 777) % 2147483647 
+        
+        # 👑 核心安全修复：使用 -f 计算覆盖深度，防爆硬盘
+        cmd = ["art_illumina", "-ss", profile, "-i", ref, "-l", str(read_len), "-na", "-q", "-rs", str(art_seed), "-o", out_base]
+        if mode == "PE": 
+            cmd.extend(["-p", "-m", str(frag_mean), "-s", str(frag_std), "-f", f"{fold_cov:.6f}"])
+        else: 
+            cmd.extend(["-f", f"{fold_cov:.6f}"])
+        run_cmd(cmd)
+
+    tasks = []
+    task_counter = 0
+    for ref, target_reads in config_dict.items():
+        if target_reads <= 0: continue
+        
+        genome_len = get_fasta_length(ref)
+        if genome_len == 0: continue
+        
+        total_fold_cov = (target_reads * read_len) / float(genome_len)
+        num_chunks = threads if target_reads > 50000 else 1
+        chunk_cov = total_fold_cov / num_chunks
+        
+        if chunk_cov < 0.001:
+            num_chunks = 1
+            chunk_cov = total_fold_cov
+            
+        for i in range(num_chunks):
+            tasks.append((ref, chunk_cov, task_counter))
+            task_counter += 1
+
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        executor.map(run_art_chunk, tasks)
+
+    print(f"  -> [洗牌压缩] 强制混匀配对，输出全局 .fq.gz (Seed={seed}) ...")
+    if mode == "PE":
+        raw_r1, raw_r2 = os.path.join(tmp_dir, "raw_R1.fq"), os.path.join(tmp_dir, "raw_R2.fq")
+        concat_files_binary(glob.glob(os.path.join(tmp_dir, "*1.fq")), raw_r1)
+        concat_files_binary(glob.glob(os.path.join(tmp_dir, "*2.fq")), raw_r2)
+        tmp_r1, tmp_r2 = f"{out_prefix}_tmpR1.fq.gz", f"{out_prefix}_tmpR2.fq.gz"
+        run_shuffle_atomic(raw_r1, seed, tmp_r1)
+        run_shuffle_atomic(raw_r2, seed, tmp_r2)
+        if shutil.which("repair.sh"):
+            run_cmd(["repair.sh", f"in1={tmp_r1}", f"in2={tmp_r2}",
+                     f"out1={final_r1}", f"out2={final_r2}", "overwrite=true"])
+            os.remove(tmp_r1); os.remove(tmp_r2)
+        else:
+            os.rename(tmp_r1, final_r1); os.rename(tmp_r2, final_r2)
+    else:
+        raw_se = os.path.join(tmp_dir, "raw_SE.fq")
+        concat_files_binary(glob.glob(os.path.join(tmp_dir, "*.fq")), raw_se)
+        run_shuffle_atomic(raw_se, seed, final_r1)
+        
+    shutil.rmtree(tmp_dir)
+    return final_r1, final_r2
+
+def api_subsample(r1, r2, se, mode, outdir, depths, repeats, threads, resume=False):
+    os.makedirs(outdir, exist_ok=True)
+    print(f"  -> [抽样] 启动 Jackknife 多深度并发压缩抽样...")
+    
+    # 提取有意义的文件前缀 (例如把 "Master_0.0pct_PE_R1.fastq.gz" 变成 "Master_0.0pct")
+    if mode == "PE":
+        base_name = os.path.basename(r1).replace("_PE_R1.fastq.gz", "").replace("_R1.fastq.gz", "")
+    else:
+        base_name = os.path.basename(se).replace("_SE.fastq.gz", "").replace(".fastq.gz", "")
+        
+    def sample_single(infile, depth, seed, outfile):
+        if resume and is_done([outfile]): return 1
+        
+        # 同样使用原子写入，并确保 .gz 后缀触发压缩
+        if outfile.endswith(".gz"):
+            tmp_out = f"{outfile}.tmp.gz"
+        else:
+            tmp_out = f"{outfile}.tmp"
+            
+        run_cmd(["seqkit", "sample", "-s", str(seed), "-n", str(depth), infile, "-o", tmp_out])
+        os.rename(tmp_out, outfile)
+        return 0
+
+    futures = []
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        for d in depths:
+            for s in range(1, repeats + 1):
+                if mode == "PE":
+                    # 新命名规则: 前缀_sub_深度_rep次数_R1.fastq.gz
+                    out_r1 = os.path.join(outdir, f"{base_name}_sub_{d}_rep{s}_R1.fastq.gz")
+                    out_r2 = os.path.join(outdir, f"{base_name}_sub_{d}_rep{s}_R2.fastq.gz")
+                    futures.append(executor.submit(sample_single, r1, d, s, out_r1))
+                    futures.append(executor.submit(sample_single, r2, d, s, out_r2))
+                else:
+                    out_se = os.path.join(outdir, f"{base_name}_sub_{d}_rep{s}_SE.fastq.gz")
+                    futures.append(executor.submit(sample_single, se, d, s, out_se))
+                    
+    skipped = sum(f.result() for f in futures)
+    if skipped > 0: print(f"  ⏭️ [断点续传] 跳过了 {skipped} 个已完成的抽样文件")
+
+def api_lod_test(bg_ref, target_paths, total_reads, factors, read_len, mode, outdir, threads, seed, resume=False):
+    os.makedirs(outdir, exist_ok=True)
+    print("\n[LoD 测试] 生成共享宿主背景 (97%)...")
+    bg_reads = int(total_reads * 0.97)
+    bg_reads = bg_reads + 1 if bg_reads % 2 != 0 else bg_reads
+    
+    bg_prefix = os.path.join(outdir, "Shared_Background")
+    tmp_bg_r1, tmp_bg_r2 = api_run_sim({bg_ref: bg_reads}, bg_prefix, mode, read_len, "HS25", seed, threads=threads, resume=resume)
+    
+    for v_path in target_paths:
+        virus_name = os.path.splitext(os.path.basename(v_path))[0]
+        # 内层因子并行：每个病毒的6个factor同时跑
+        factor_threads = max(1, threads // 2)
+
+        def process_factor(factor):
+            mix_prefix = os.path.join(outdir, f"LoD_Mixed_{virus_name}_{factor}")
+            mix_r1 = f"{mix_prefix}_PE_R1.fastq.gz" if mode == "PE" else f"{mix_prefix}_SE.fastq.gz"
+            mix_r2 = f"{mix_prefix}_PE_R2.fastq.gz" if mode == "PE" else None
+
+            if resume and is_done([mix_r1, mix_r2] if mode == "PE" else [mix_r1]):
+                print(f"  ⏭️ [断点续传] 混合样本已存在，跳过: {os.path.basename(mix_r1)}")
+                return
+
+            v_reads = int(total_reads * 0.03 * factor)
+            v_reads = v_reads + 1 if v_reads % 2 != 0 else v_reads
+            if v_reads <= 0: return
+
+            print(f"  -> 混入病毒: {virus_name} (稀释因子: {factor}, 约 {v_reads} reads)")
+            v_prefix = os.path.join(outdir, f"tmp_{virus_name}_{factor}")
+            tmp_v_r1, tmp_v_r2 = api_run_sim({v_path: v_reads}, v_prefix, mode, read_len, "HS25", seed, threads=factor_threads, resume=resume)
+
+            print("  -> [混匀] 病毒与背景执行拼接大洗牌...")
+            if mode == "PE":
+                raw_r1, raw_r2 = f"{mix_prefix}_rawR1.fq.gz", f"{mix_prefix}_rawR2.fq.gz"
+                concat_files_binary([tmp_bg_r1, tmp_v_r1], raw_r1)
+                concat_files_binary([tmp_bg_r2, tmp_v_r2], raw_r2)
+                # 先 shuffle 再修复配对，确保双端 reads 顺序一致（Kaiju兼容）
+                tmp_r1, tmp_r2 = f"{mix_prefix}_tmpR1.fq.gz", f"{mix_prefix}_tmpR2.fq.gz"
+                run_shuffle_atomic(raw_r1, seed, tmp_r1)
+                run_shuffle_atomic(raw_r2, seed, tmp_r2)
+                if shutil.which("repair.sh"):
+                    run_cmd(["repair.sh", f"in1={tmp_r1}", f"in2={tmp_r2}",
+                             f"out1={mix_r1}", f"out2={mix_r2}", "overwrite=true"])
+                    os.remove(tmp_r1); os.remove(tmp_r2)
+                else:
+                    os.rename(tmp_r1, mix_r1); os.rename(tmp_r2, mix_r2)
+                os.remove(raw_r1); os.remove(raw_r2)
+                os.remove(tmp_v_r1); os.remove(tmp_v_r2)
+
+        with ThreadPoolExecutor(max_workers=min(len(factors), factor_threads)) as executor:
+            list(executor.map(process_factor, factors))
+
+# ==========================================
+# 独立子命令 Wrapper
+# ==========================================
+def cmd_mutate(args):
+    check_dependencies(require_mut=True)
+    for r in parse_mut_rates(args.rate): api_mutate(args.indir, args.outdir, r, args.resume)
+    print(f"✅ 突变生成完毕: {args.outdir}")
+
+def cmd_gen_config(args):
+    print("🌟 开始生成群落丰度配置文件...")
+    if args.resume and os.path.exists(args.outconfig):
+        print(f"⏭️ [断点续传] 配置文件已存在: {args.outconfig}")
+        return
+    config = api_gen_config(args.indir, args.read_len, parse_number(args.depth) if args.depth else None, parse_number(args.total_reads) if args.total_reads else None)
+    with open(args.outconfig, 'w') as f:
+        for g, r in config.items(): f.write(f"{g}\t{r}\n")
+    print(f"✅ 配置文件已保存: {args.outconfig}")
+
+def cmd_simulator(args):
+    check_dependencies()
+    print("🚀 开始多线程模拟测序并洗牌...")
+    api_run_sim(load_config(args.config), args.out, args.mode, args.read_len, args.profile, args.seed, args.threads, args.frag_mean, args.frag_std, args.resume)
+    print("✅ 模拟与大洗牌完成！")
+
+def cmd_subsample(args):
+    check_dependencies()
+    api_subsample(args.r1, args.r2, args.se, args.mode, args.outdir, [parse_number(d) for d in args.depths], args.repeats, args.threads, args.resume)
+    print(f"✅ 子采样全部完成: {args.outdir}")
+
+def cmd_lod_mix(args):
+    check_dependencies()
+    print("🦠 启动独立 LoD 大海捞针测试...")
+    target_paths = resolve_targets(args.indir, args.targets)
+    api_lod_test(args.bgref, target_paths, args.total_reads, args.factors, args.read_len, args.mode, args.outdir, args.threads, args.seed, args.resume)
+    print("✅ LoD 测试数据集生成完毕！")
+
+def cmd_benchmark(args):
+    check_dependencies(require_mut=True)
+    os.makedirs(args.outdir, exist_ok=True)
+    print("\n" + "="*50)
+    print("🚀 启动 Ultimate Benchmark 终极流水线")
+    print("="*50)
+
+    base_config_path = os.path.join(args.outdir, "Base_Abundance_Profile.txt")
+    if args.resume and os.path.exists(base_config_path):
+        print("\n[1/3] ⏭️ [断点续传] 读取已存的全局黄金丰度比例...")
+        base_config = load_config(base_config_path)
+    else:
+        print("\n[1/3] 🎲 锁定全局标准群落丰度 (变量控制)...")
+        if args.depth:
+            base_config = api_gen_config(args.indir, args.read_len, depth=parse_number(args.depth))
+        else:
+            base_config = api_gen_config(args.indir, args.read_len, total_reads=args.total_reads)
+        with open(base_config_path, 'w') as f:
+            for g, r in base_config.items(): f.write(f"{g}\t{r}\n")
+
+    rates = parse_mut_rates(args.mut_rates)
+    depths = [parse_number(d) for d in args.depths]
+    
+    for rate in rates:
+        rate_dir = os.path.join(args.outdir, f"Dataset_Mut_{rate}pct")
+        os.makedirs(rate_dir, exist_ok=True)
+        
+        current_config = base_config.copy()
+        if rate != 0:
+            path_map = api_mutate(args.indir, os.path.join(rate_dir, "Mutated_Genomes"), rate, args.resume)
+            current_config = {path_map[orig]: reads for orig, reads in base_config.items()}
+                
+        m_prefix = os.path.join(rate_dir, f"Master_{rate}pct")
+        r1, r2 = api_run_sim(current_config, m_prefix, args.mode, args.read_len, args.profile, args.seed, args.threads, resume=args.resume)
+        
+        sub_dir = os.path.join(rate_dir, "Jackknife_Subsamples")
+        if args.mode == "PE": api_subsample(r1, r2, None, "PE", sub_dir, depths, args.repeats, args.threads, args.resume)
+        else: api_subsample(None, None, r1, "SE", sub_dir, depths, args.repeats, args.threads, args.resume)
+
+    if args.bgref and os.path.exists(args.bgref):
+        lod_dir = os.path.join(args.outdir, "Dataset_LoD_Test")
+        target_paths = resolve_targets(args.indir, args.targets)
+        api_lod_test(args.bgref, target_paths, args.total_reads, [0.0005, 0.001, 0.005, 0.01, 0.05, 0.1], args.read_len, args.mode, lod_dir, args.threads, args.seed, args.resume)
+    
+    print("\n" + "="*50)
+    print(f"🎉 终极流水线执行完毕！结果保存在: {os.path.abspath(args.outdir)}")
+    print("="*50)
+
+# ==========================================
+# CLI 解析引擎
+# ==========================================
+def main():
+    parser = argparse.ArgumentParser(description="👑 Virome Simulator Ultimate (全功能宏基因组数据生成引擎)")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    def add_common_args(p):
+        p.add_argument("--resume", action="store_true", help="启用断点续传")
+
+    p_mut = subparsers.add_parser("mutate")
+    p_mut.add_argument("-i", "--indir", required=True); p_mut.add_argument("-o", "--outdir", required=True)
+    p_mut.add_argument("-r", "--rate", nargs='+', default=["5"]); add_common_args(p_mut); p_mut.set_defaults(func=cmd_mutate)
+
+    p_cfg = subparsers.add_parser("gen-config")
+    p_cfg.add_argument("-i", "--indir", required=True); p_cfg.add_argument("-o", "--outconfig", default="config.txt")
+    p_cfg.add_argument("-l", "--read-len", type=int, default=150)
+    g = p_cfg.add_mutually_exclusive_group(required=True)
+    g.add_argument("-d", "--depth", type=str); g.add_argument("-t", "--total-reads", type=str)
+    add_common_args(p_cfg); p_cfg.set_defaults(func=cmd_gen_config)
+
+    p_sim = subparsers.add_parser("simulator")
+    p_sim.add_argument("-c", "--config", required=True); p_sim.add_argument("-o", "--out", default="Simulated_Data")
+    p_sim.add_argument("--mode", choices=["SE", "PE"], default="PE"); p_sim.add_argument("--threads", type=int, default=8)
+    p_sim.add_argument("-l", "--read-len", type=int, default=150); p_sim.add_argument("--profile", default="HS25")
+    p_sim.add_argument("--seed", type=int, default=42); p_sim.add_argument("-m", "--frag-mean", type=int, default=300)
+    p_sim.add_argument("-s", "--frag-std", type=int, default=50); add_common_args(p_sim); p_sim.set_defaults(func=cmd_simulator)
+
+    p_sub = subparsers.add_parser("subsample")
+    p_sub.add_argument("--mode", choices=["SE", "PE"], required=True); p_sub.add_argument("--r1", help="R1")
+    p_sub.add_argument("--r2", help="R2"); p_sub.add_argument("--se", help="SE"); p_sub.add_argument("-o", "--outdir", default="Subsampled_Data")
+    p_sub.add_argument("-d", "--depths", nargs='+', required=True); p_sub.add_argument("-r", "--repeats", type=int, default=5)
+    p_sub.add_argument("--threads", type=int, default=8); add_common_args(p_sub); p_sub.set_defaults(func=cmd_subsample)
+
+    p_lod = subparsers.add_parser("LoD_mix")
+    p_lod.add_argument("-i", "--indir", required=True); p_lod.add_argument("--bgref", required=True)
+    p_lod.add_argument("--targets", default="all"); p_lod.add_argument("-t", "--total-reads", type=parse_number, default=20000000)
+    p_lod.add_argument("--factors", nargs='+', type=float, default=[0.0005, 0.001, 0.01, 0.1]); p_lod.add_argument("--mode", choices=["SE", "PE"], default="PE")
+    p_lod.add_argument("-l", "--read-len", type=int, default=150); p_lod.add_argument("-o", "--outdir", default="LoD_Dataset")
+    p_lod.add_argument("--seed", type=int, default=42); p_lod.add_argument("--threads", type=int, default=8)
+    add_common_args(p_lod); p_lod.set_defaults(func=cmd_lod_mix)
+
+    p_bench = subparsers.add_parser("benchmark")
+    p_bench.add_argument("-i", "--indir", required=True); p_bench.add_argument("-o", "--outdir", default="Ultimate_Benchmark_Results")
+    p_bench.add_argument("-t", "--total-reads", type=parse_number, default=20000000); p_bench.add_argument("--mode", choices=["SE", "PE"], default="PE")
+    p_bench.add_argument("--threads", type=int, default=8); p_bench.add_argument("--mut-rates", nargs='+', default=["0", "5", "15"])
+    p_bench.add_argument("--depths", nargs='+', default=["500k", "1M", "5M"]); p_bench.add_argument("--repeats", type=int, default=5)
+    p_bench.add_argument("--bgref", default=""); p_bench.add_argument("--targets", default="all")
+    p_bench.add_argument("--depth", type=str, default=None, help="统一覆盖深度(如500x)，均匀分配reads（替代--total-reads随机分配）")
+    p_bench.add_argument("-l", "--read-len", type=int, default=150); p_bench.add_argument("--profile", default="HS25")
+    p_bench.add_argument("--seed", type=int, default=42); add_common_args(p_bench); p_bench.set_defaults(func=cmd_benchmark)
+
+    args = parser.parse_args()
+    args.func(args)
+
+if __name__ == "__main__":
+    monitor = PerformanceMonitor()
+    try:
+        main()
+    finally:
+        monitor.report()
