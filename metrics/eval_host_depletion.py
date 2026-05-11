@@ -35,68 +35,60 @@ def extract_virus_accession(filename):
 
 
 def count_with_rg(fastq_file, virus_acc):
-    """
-    用 ripgrep 统计一个 FASTQ 中的宿主/病毒 reads 数。
-    rg -c 返回匹配行数（即 reads 数），速度极快。
-    """
-    # 病毒 reads：read ID 以 virus_acc 开头
+    """用 ripgrep -z (搜索压缩文件) 统计 FASTQ 中宿主/病毒 reads 数"""
     try:
-        # 统计病毒 reads：rg -c "^@病毒Accession" fastq_file
-        virus_cmd = ["rg", "-c", rf"^@{virus_acc}[-\s/]", fastq_file]
-        virus_result = subprocess.run(virus_cmd, capture_output=True, text=True, timeout=60)
-        virus_count = int(virus_result.stdout.strip()) if virus_result.stdout.strip().isdigit() else 0
-    except Exception:
+        vc = subprocess.run(
+            ["rg", "-z", "-c", f"^@{virus_acc}-", fastq_file],
+            capture_output=True, text=True, timeout=120
+        )
+        virus_count = int(vc.stdout.strip()) if vc.stdout.strip().isdigit() else 0
+    except:
         virus_count = 0
-
-    # 总 reads = @ 开头的行数
     try:
-        total_cmd = ["rg", "-c", r"^@", fastq_file]
-        total_result = subprocess.run(total_cmd, capture_output=True, text=True, timeout=60)
-        total_count = int(total_result.stdout.strip()) if total_result.stdout.strip().isdigit() else 0
-    except Exception:
+        tc = subprocess.run(
+            ["rg", "-z", "-c", "^@", fastq_file],
+            capture_output=True, text=True, timeout=120
+        )
+        total_count = int(tc.stdout.strip()) if tc.stdout.strip().isdigit() else 0
+    except:
         total_count = 0
-
-    host_count = max(0, total_count - virus_count)
-    return host_count, virus_count
+    return max(0, total_count - virus_count), virus_count
 
 
 def process_file(args_tuple):
-    """单个文件的处理任务（多进程）"""
-    fastq_file, virus_acc = args_tuple
-    return count_with_rg(fastq_file, virus_acc)
+    fastq_file, virus_acc, group_name = args_tuple
+    host, virus = count_with_rg(fastq_file, virus_acc)
+    basename = os.path.basename(fastq_file)
+    lod_match = re.search(r'_(\d+\.\d+)', basename.replace('.fastq', '').replace('.gz', ''))
+    lod_factor = float(lod_match.group(1)) if lod_match else None
+    total = host + virus
+    return {
+        'Group': group_name, 'File': basename, 'Accession': virus_acc,
+        'LoD_Factor': lod_factor, 'Host_Reads': host, 'Virus_Reads': virus,
+        'Total_Reads': total,
+        'Virus_Pct': round(virus / total * 100, 4) if total > 0 else 0,
+    }
 
 
 def scan_dir(dir_path, group_name, threads):
-    """扫描目录，并行统计所有 R1 文件"""
     files = sorted(glob.glob(os.path.join(dir_path, "*_R1.fastq*")))
-
-    # 构建任务列表
     tasks = []
     for f in files:
         acc = extract_virus_accession(f)
         if acc is None:
             print(f"  WARNING: Cannot extract accession from {os.path.basename(f)}, skipping")
             continue
-        tasks.append((f, acc))
+        tasks.append((f, acc, group_name))
 
     print(f"[{group_name}] {len(tasks)} files, {threads} threads")
-
-    total_host = 0
-    total_virus = 0
-
+    records = []
     with ProcessPoolExecutor(max_workers=threads) as executor:
-        results = list(tqdm(
-            executor.map(process_file, tasks),
-            total=len(tasks),
-            desc=group_name,
-            unit="file"
-        ))
-        for h, v in results:
-            total_host += h
-            total_virus += v
+        records = list(tqdm(executor.map(process_file, tasks), total=len(tasks), desc=group_name))
 
+    total_host = sum(r['Host_Reads'] for r in records)
+    total_virus = sum(r['Virus_Reads'] for r in records)
     print(f"  Host: {total_host:,}  Virus: {total_virus:,}")
-    return {'Group': group_name, 'Host_Reads': total_host, 'Virus_Reads': total_virus}
+    return records
 
 
 def main():
@@ -106,39 +98,55 @@ def main():
     parser.add_argument('--d2', required=True)
     parser.add_argument('--d3', required=True)
     parser.add_argument('--d4', required=True)
-    parser.add_argument('--output', required=True)
+    parser.add_argument('--outdir', default='step5_host_free_analysis', help='输出目录 (default: step5_host_free_analysis)')
     parser.add_argument('--threads', type=int, default=8)
     args = parser.parse_args()
+
+    os.makedirs(args.outdir, exist_ok=True)
 
     # 检查 ripgrep
     if not subprocess.run(["which", "rg"], capture_output=True).returncode == 0:
         print("ERROR: ripgrep (rg) not found. Install: conda install -c conda-forge ripgrep")
         sys.exit(1)
 
-    results = [
-        scan_dir(args.d0, 'D0_Baseline', args.threads),
-        scan_dir(args.d1, 'D1_Kraken2_only', args.threads),
-        scan_dir(args.d2, 'D2_HISAT2_only', args.threads),
-        scan_dir(args.d3, 'D3_K2_HISAT2', args.threads),
-        scan_dir(args.d4, 'D4_Full', args.threads),
-    ]
+    all_records = []
+    all_records.extend(scan_dir(args.d0, 'D0_Baseline', args.threads))
+    all_records.extend(scan_dir(args.d1, 'D1_Kraken2_only', args.threads))
+    all_records.extend(scan_dir(args.d2, 'D2_HISAT2_only', args.threads))
+    all_records.extend(scan_dir(args.d3, 'D3_K2_HISAT2', args.threads))
+    all_records.extend(scan_dir(args.d4, 'D4_Full', args.threads))
 
-    df = pd.DataFrame(results)
-    base_host = df.loc[df['Group'] == 'D0_Baseline', 'Host_Reads'].values[0]
-    base_virus = df.loc[df['Group'] == 'D0_Baseline', 'Virus_Reads'].values[0]
+    detail_df = pd.DataFrame(all_records)
 
-    df['Host_Depletion_Rate(%)'] = ((1 - df['Host_Reads'] / base_host) * 100).round(2)
-    df['Virus_Retention_Rate(%)'] = ((df['Virus_Reads'] / base_virus) * 100).round(2)
+    # 计算每个样本的病毒保留率（以D0为基线）
+    d0_virus = detail_df[detail_df['Group'] == 'D0_Baseline'].set_index('Accession')['Virus_Reads'].to_dict()
+    def calc_retention(row):
+        if row['Group'] == 'D0_Baseline': return 100.0
+        base = d0_virus.get(row['Accession'], None)
+        return round(row['Virus_Reads'] / base * 100, 2) if base and base > 0 else None
+    detail_df['Virus_Retention'] = detail_df.apply(calc_retention, axis=1)
 
-    base_ratio = base_virus / (base_host + base_virus) if (base_host + base_virus) > 0 else 1
-    def enrichment(row):
-        total = row['Host_Reads'] + row['Virus_Reads']
-        return round((row['Virus_Reads'] / total) / base_ratio, 1) if total > 0 else 0.0
-    df['Virus_Enrichment_Fold'] = df.apply(enrichment, axis=1)
+    # detail 表
+    detail_path = os.path.join(args.outdir, 'host_depletion_detail.tsv')
+    detail_df.to_csv(detail_path, sep='\t', index=False)
 
-    df.to_csv(args.output, sep='\t', index=False)
-    print("\n" + df.to_string(index=False))
-    print(f"\nSaved: {args.output}")
+    # 汇总表
+    summary = detail_df.groupby('Group').agg(Host_Total=('Host_Reads', 'sum'), Virus_Total=('Virus_Reads', 'sum')).reset_index()
+    bh, bv = summary.iloc[0]['Host_Total'], summary.iloc[0]['Virus_Total']
+    summary['Host_Depletion_Rate(%)'] = ((1 - summary['Host_Total'] / bh) * 100).round(2)
+    summary['Virus_Retention_Rate(%)'] = ((summary['Virus_Total'] / bv) * 100).round(2)
+    br = bv / (bh + bv) if (bh + bv) > 0 else 1
+    summary['Virus_Enrichment_Fold'] = summary.apply(
+        lambda r: round((r['Virus_Total'] / (r['Host_Total'] + r['Virus_Total'])) / br, 1)
+        if (r['Host_Total'] + r['Virus_Total']) > 0 else 0, axis=1)
+
+    summary_path = os.path.join(args.outdir, 'host_depletion_summary.tsv')
+    summary.to_csv(summary_path, sep='\t', index=False)
+
+    print("\n" + summary.to_string(index=False))
+    print(f"\nDetail: {detail_path}")
+    print(f"Summary: {summary_path}")
+    print(f"\nPlot: python eval_plant_virus/metrics/plot_host_depletion.py --detail-tsv {detail_path} --summary-tsv {summary_path} --outdir {args.outdir}")
 
 
 if __name__ == "__main__":
