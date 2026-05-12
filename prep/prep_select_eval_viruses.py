@@ -356,6 +356,7 @@ def main():
     parser.add_argument("--ref-fasta", required=True, help="final.cluster.ref.fasta")
     parser.add_argument("--n-viruses", type=int, default=50, help="目标选取数量")
     parser.add_argument("--exclude", help="需排除的目录（含已选的.fasta）")
+    parser.add_argument("--include", help="必须包含的病毒Accession (逗号分隔或文件)")
     parser.add_argument("--outdir", required=True, help="输出目录")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -373,8 +374,26 @@ def main():
     # 3. 加载FASTA索引
     fasta_idx = load_fasta_index(args.ref_fasta)
 
+    # 3.5. 强制包含指定病毒
+    forced = []
+    if args.include:
+        include_list = []
+        if os.path.isfile(args.include):
+            with open(args.include) as f:
+                include_list = [line.strip().split()[0] for line in f if line.strip()]
+        else:
+            include_list = [x.strip() for x in args.include.split(',')]
+        for acc in include_list:
+            for r in records:
+                if r['accession'] == acc:
+                    forced.append(r)
+                    records.remove(r)
+                    break
+        print(f"[include] Forced {len(forced)} viruses: {[r['accession'] for r in forced]}")
+
     # 4. 分层选取
-    selected, log = stratified_select(records, args.n_viruses, rng)
+    selected, log = stratified_select(records, args.n_viruses - len(forced), rng)
+    selected = forced + selected
 
     # 5. 检查: 候选不够时从其余类型补充
     if len(selected) < args.n_viruses:
