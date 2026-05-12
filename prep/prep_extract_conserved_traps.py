@@ -65,7 +65,7 @@ TARGET_PFAM = {
 # 阶段1: 运行 para_hmmscan.pl 进行 Pfam 注释
 # ============================================================
 
-def run_pfam_annotation(protein_fasta, pfam_db, out_dir, cpu=12, hmmscan_cpu=4, chunk=100):
+def run_pfam_annotation(protein_fasta, pfam_db, out_dir, cpu=20, hmmscan_cpu=4, chunk=100):
     """
     调用 para_hmmscan.pl 对宿主蛋白序列进行 Pfam 注释。
     使用 --outformat 输出简化7列格式。
@@ -133,7 +133,9 @@ def parse_pfam_output(pfam_tsv):
                 continue
 
             # 判断格式：简化7列 vs domtblout (23列)
-            if len(parts) >= 7 and parts[1].startswith("PF") and len(parts[1]) == 7:
+            # Pfam ID 格式: PF开头后跟5位数字，可能带版本号.xx
+            is_pfam_col = parts[1].startswith("PF") and parts[1][2:7].isdigit() if len(parts[1]) >= 7 else False
+            if len(parts) >= 7 and is_pfam_col:
                 # 简化7列格式: GeneID PFxxxxx HMM_Name E-value Score Coverage Description
                 seq_id = parts[0].strip()
                 pfam_id = parts[1].strip()
@@ -149,10 +151,12 @@ def parse_pfam_output(pfam_tsv):
                             pfam_id = cell
                             break
 
-            if pfam_id in TARGET_PFAM:
-                pfam[seq_id].append(pfam_id)
+            base_id = pfam_id.split(".")[0] if "." in pfam_id else pfam_id
+            if base_id in TARGET_PFAM:
+                pfam[seq_id].append(base_id)
 
     total = len(pfam)
+    print(f"[parse] DEBUG: pfam dict has {total} keys, first 5: {list(pfam.keys())[:5]}")
     print(f"[parse] Found {total} sequences with target Pfam domains")
     if total > 0:
         for pid, desc in TARGET_PFAM.items():
@@ -296,7 +300,7 @@ def main():
     by_pfam = defaultdict(list)
     for seq_id, seq, pfam_list in unique_qualified:
         for pid in pfam_list:
-            by_pfam[pid].append((seq_id, seq))
+            by_pfam[pid].append((seq_id, seq, pfam_list))
 
     selected = []
     if by_pfam:
@@ -311,13 +315,14 @@ def main():
         selected = rng.sample(selected, args.n_sequences)
     elif len(selected) < args.n_sequences:
         # 不足时从剩余中补齐
-        remaining = [q for q in unique_qualified
-                     if (q[0], q[1]) not in {(s[0], s[1]) for s in selected}]
+        sel_set = {(s[0], s[1]) for s in selected}
+        remaining = [(q[0], q[1], q[2]) for q in unique_qualified 
+                     if (q[0], q[1]) not in sel_set]
         if remaining:
             extra = rng.sample(remaining,
                                min(args.n_sequences - len(selected), len(remaining)))
-            for seq_id, seq, pfam_list in extra:
-                selected.append((seq_id, seq, pfam_list))
+            for q in extra:
+                selected.append(tuple(q))
 
     # 写出
     summary = defaultdict(int)
