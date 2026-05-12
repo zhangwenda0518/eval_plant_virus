@@ -201,13 +201,20 @@ def main():
     test_records, cut_seqs = generate_test_sequences_by_coverage(
         virus_seqs, args.coverage_levels, args.n_per_coverage, rng)
 
-    # 写出测试序列
+    # 写出测试序列（分散文件）
     test_dir = os.path.join(args.outdir, "test_sequences")
     os.makedirs(test_dir, exist_ok=True)
     for seq_id, seq_str in cut_seqs:
         out_file = os.path.join(test_dir, f"{seq_id.replace('|', '_')}.fasta")
         with open(out_file, "w") as f:
             f.write(f">{seq_id}\n{seq_str}\n")
+
+    # 写出合并的测试序列文件（供下游工具一次加载）
+    merged_fasta = os.path.join(args.outdir, "test_sequences_merged.fasta")
+    with open(merged_fasta, "w") as f:
+        for seq_id, seq_str in cut_seqs:
+            f.write(f">{seq_id}\n{seq_str}\n")
+    print(f"[test] Merged all sequences into {merged_fasta}")
 
     # 写出测试元数据
     meta_df = pd.DataFrame(test_records)
