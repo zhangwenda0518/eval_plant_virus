@@ -337,7 +337,7 @@ def api_lod_test(bg_ref, target_paths, bg_reads, depths, read_len, mode, outdir,
     bg_reads_even = bg_reads + 1 if bg_reads % 2 != 0 else bg_reads
     
     bg_prefix = os.path.join(outdir, "Shared_Background")
-    tmp_bg_r1, tmp_bg_r2 = api_run_sim({bg_ref: bg_reads_even}, bg_prefix, mode, read_len, "HS25", seed, threads=1, resume=resume)
+    tmp_bg_r1, tmp_bg_r2 = api_run_sim({bg_ref: bg_reads_even}, bg_prefix, mode, read_len, "HS25", seed, threads=2, resume=resume)
     
     tasks = [(v_path, d) for v_path in target_paths for d in depths]
     print(f"  -> 准备完毕！启动 {threads} 个并发进程，跨 {len(target_paths)} 个病毒与 {len(depths)} 个深度梯度同时掺入...")
@@ -363,7 +363,7 @@ def api_lod_test(bg_ref, target_paths, bg_reads, depths, read_len, mode, outdir,
         v_prefix = os.path.join(outdir, f"tmp_{virus_name}_{target_depth}x")
         art_seed = int(seed + target_depth * 10000) % 2147483647
         
-        tmp_v_r1, tmp_v_r2 = api_run_sim({v_path: v_reads}, v_prefix, mode, read_len, "HS25", art_seed, threads=1, resume=resume)
+        tmp_v_r1, tmp_v_r2 = api_run_sim({v_path: v_reads}, v_prefix, mode, read_len, "HS25", art_seed, threads=2, resume=resume)
 
         if mode == "PE":
             raw_r1, raw_r2 = f"{mix_prefix}_rawR1.fq.gz", f"{mix_prefix}_rawR2.fq.gz"
