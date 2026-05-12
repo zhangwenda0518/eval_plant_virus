@@ -357,6 +357,7 @@ def main():
     parser.add_argument("--n-viruses", type=int, default=50, help="目标选取数量")
     parser.add_argument("--exclude", help="需排除的目录（含已选的.fasta）")
     parser.add_argument("--include", help="必须包含的病毒Accession (逗号分隔或文件)")
+    parser.add_argument("--n-groups", type=int, default=0, help="分层分组数量 (0=不分组, 如5则分成5组)")
     parser.add_argument("--outdir", required=True, help="输出目录")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -418,6 +419,38 @@ def main():
 
     # 6. 写出
     write_output(selected, log, fasta_idx, args.outdir)
+
+    # 7. 按基因组类型分层分组（--n-groups=N）
+    if args.n_groups and args.n_groups > 1:
+        _write_groups(log, args.outdir, args.n_groups, rng)
+
+
+def _write_groups(selection_log, outdir, n_groups, rng):
+    """按基因组类型分层分组，每组输出到 group_N/ 子目录"""
+    import shutil
+    grouped = {i: [] for i in range(1, n_groups + 1)}
+
+    for gtype in sorted(set(r['genome_type'] for r in selection_log)):
+        subset = [r for r in selection_log if r['genome_type'] == gtype]
+        rng.shuffle(subset)
+        for i, r in enumerate(subset):
+            grouped[(i % n_groups) + 1].append(r)
+
+    for g in range(1, n_groups + 1):
+        gdir = os.path.join(outdir, f"group_{g}")
+        os.makedirs(gdir, exist_ok=True)
+        gaccs = [r['accession'] for r in grouped[g]]
+        # 拷贝FASTA文件
+        for acc in gaccs:
+            src = os.path.join(outdir, f"{acc}.fasta")
+            dst = os.path.join(gdir, f"{acc}.fasta")
+            if os.path.exists(src) and not os.path.exists(dst):
+                shutil.copy2(src, dst)
+        # 写分组表
+        import pandas as pd
+        gdf = pd.DataFrame(grouped[g])
+        gdf.to_csv(os.path.join(gdir, f"group_{g}.tsv"), sep='\t', index=False)
+        print(f"  Group {g}: {len(gaccs)} viruses")
 
 
 if __name__ == "__main__":
