@@ -496,8 +496,8 @@ def cmd_benchmark(args):
     if args.bgref and os.path.exists(args.bgref):
         lod_dir = os.path.join(args.outdir, "Dataset_LoD_Test")
         target_paths = resolve_targets(args.indir, args.targets)
-        # 默认针对五种标准梯度的 Spike-in Depth
-        api_lod_test(args.bgref, target_paths, args.total_reads, [0.1, 0.5, 1.0, 5.0, 10.0, 50.0], args.read_len, args.mode, lod_dir, args.threads, args.seed, args.resume)
+        # 宿主背景 10M reads
+        api_lod_test(args.bgref, target_paths, 10000000, [0.1, 0.5, 1.0, 5.0, 10.0, 50.0], args.read_len, args.mode, lod_dir, args.threads, args.seed, args.resume)
     
     print("\n" + "="*50)
     print(f"🎉 终极流水线执行完毕！结果保存在: {os.path.abspath(args.outdir)}")
