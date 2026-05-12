@@ -158,7 +158,8 @@ def generate_negative_B_traps(conserved_dir, out_dir, n, pos_records, rng):
 def load_eve_sequences(eve_fasta, host_genome):
     """
     加载 EVE/转座子序列。
-    优先使用参数提供的 EVE FASTA，否则尝试从宿主基因组中提取（通过简单k-mer筛选 RT/RdRp 保守模体）。
+    优先使用 --eve-fasta 提供的专门 EVE/转座子序列文件。
+    降级方案：从宿主基因组中随机截取长序列（废弃了有Bug的氨基酸Motif扫描）。
     """
     eve_seqs = []
     if eve_fasta and os.path.exists(eve_fasta):
@@ -167,52 +168,38 @@ def load_eve_sequences(eve_fasta, host_genome):
                 eve_seqs.append((rec.id, str(rec.seq)))
         print(f"[eve] Loaded {len(eve_seqs)} EVE sequences from {eve_fasta}")
     elif host_genome and os.path.exists(host_genome):
-        # 降级：从宿主基因组中粗略筛选含逆转录酶(RT)保守模体的序列
-        print("[eve] No EVE FASTA provided; scanning host genome for RT-like motifs...")
-        rt_motifs = ["YVDD", "YIDD", "YGDD", "ILVDD", "LLVDDF", "KVLG", "VLPQG"]
+        print("[eve] WARNING: No EVE FASTA provided. Falling back to sampling host genome for Neg-C.")
         for rec in SeqIO.parse(host_genome, "fasta"):
-            seq = str(rec.seq).upper()
-            for motif in rt_motifs:
-                if motif in seq:
-                    # 找到模体，截取周围2000bp区域
-                    pos = seq.find(motif)
-                    start = max(0, pos - 1000)
-                    end = min(len(seq), pos + 1500)
-                    frag = seq[start:end]
-                    if len(frag) >= 500:
-                        eve_seqs.append((f"{rec.id}_{motif}_pos{pos}", frag))
-                    break
-        print(f"[eve] Found {len(eve_seqs)} potential EVE/RT regions in host genome")
+            if len(rec.seq) >= 5000:
+                eve_seqs.append((rec.id, str(rec.seq)))
     return eve_seqs
 
 
 def generate_negative_C_eve(eve_seqs, pos_records, out_dir, n, rng):
-    """负样本C：从EVE/转座子序列截取，长度与正样本匹配"""
+    """负样本C：从EVE/转座子序列截取，长度与正样本匹配。无序列时直接跳过（不生成合成序列）"""
     os.makedirs(out_dir, exist_ok=True)
     pos_lengths = [r["frag_length"] for r in pos_records]
 
+    if not eve_seqs:
+        print("[negC] ERROR: No sequences available to generate Negative C. Skipping.")
+        return []
+
     records = []
     for i in range(n):
-        if eve_seqs:
-            chosen_id, chosen_seq = rng.choice(eve_seqs)
-            target_len = rng.choice(pos_lengths) if pos_lengths else rng.randint(500, 5000)
-            frag_len = min(target_len, len(chosen_seq) - 5)
-            frag_len = max(200, frag_len)
-            start = rng.randint(0, max(1, len(chosen_seq) - frag_len))
-            frag = chosen_seq[start:start + frag_len]
-            source = chosen_id
-        else:
-            frag_len = rng.choice(pos_lengths) if pos_lengths else rng.randint(500, 5000)
-            frag = "".join(rng.choices("ACGT", k=max(200, frag_len)))
-            source = "synthetic"
+        chosen_id, chosen_seq = rng.choice(eve_seqs)
+        target_len = rng.choice(pos_lengths) if pos_lengths else rng.randint(500, 5000)
+        frag_len = min(target_len, len(chosen_seq) - 5)
+        frag_len = max(200, frag_len)
+        start = rng.randint(0, max(1, len(chosen_seq) - frag_len))
+        frag = chosen_seq[start:start + frag_len)
 
-        seq_id = f"negative_C|negC_{i:04d}|source={source}"
+        seq_id = f"negative_C|negC_{i:04d}|source={chosen_id}"
         rec = SeqRecord(Seq(frag), id=seq_id, description="")
         out_file = os.path.join(out_dir, f"negC_{i:04d}.fasta")
         SeqIO.write(rec, out_file, "fasta")
         records.append({"seq_id": seq_id, "label": "negative_C", "frag_length": len(frag)})
 
-    print(f"[negC] Generated {len(records)} EVE/transposon sequences ({len(eve_seqs)} real source)")
+    print(f"[negC] Generated {len(records)} EVE/transposon sequences")
     return records
 
 
