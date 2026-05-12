@@ -118,11 +118,13 @@ def main():
 
     detail_df = pd.DataFrame(all_records)
 
-    # 计算每个样本的病毒保留率（以D0为基线）
-    d0_virus = detail_df[detail_df['Group'] == 'D0_Baseline'].set_index('Accession')['Virus_Reads'].to_dict()
+    # 计算每个样本的病毒保留率（以D0为基线，精确匹配 Accession + LoD_Factor）
+    d0_df = detail_df[detail_df['Group'] == 'D0_Baseline']
+    d0_by_key = {(r['Accession'], r['LoD_Factor']): r['Virus_Reads']
+                 for _, r in d0_df.iterrows()}
     def calc_retention(row):
         if row['Group'] == 'D0_Baseline': return 100.0
-        base = d0_virus.get(row['Accession'], None)
+        base = d0_by_key.get((row['Accession'], row['LoD_Factor']), None)
         return round(row['Virus_Reads'] / base * 100, 2) if base and base > 0 else None
     detail_df['Virus_Retention'] = detail_df.apply(calc_retention, axis=1)
 
