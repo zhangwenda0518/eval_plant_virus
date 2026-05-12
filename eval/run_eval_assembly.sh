@@ -131,6 +131,7 @@ for ((i=0; i<TOTAL; i+=BATCH)); do
                     --tmp-dir "/tmp/asm_${NAME}" \
                     --jobs "$JOBS" --threads "$THREADS" \
                     --refineC_split --refineC_merge --refineC_min_id 0.95 \
+                    --keep-temp --log_dirs "${LOGDIR}" \
                 > "${LOGDIR}/${NAME}.log" 2>&1
             ret=$?
             t1=$(date +%s)
