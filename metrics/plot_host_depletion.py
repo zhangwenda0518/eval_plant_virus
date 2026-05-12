@@ -13,26 +13,20 @@ GROUP_ORDER = ['D0_Baseline', 'D1_Kraken2', 'D2_HISAT2', 'D3_K2+HS2', 'D4_Full']
 
 
 def plot_violin_box(df, outpath):
-    """图A: 小提琴+箱线 病毒保留率（seaborn 自动处理空组）"""
-    retention = df[df['Group'] != 'D0_Baseline'][['Group', 'Virus_Retention']].dropna()
-    # 过滤全0或常数组
-    valid_groups = []
-    for g in GROUP_ORDER[1:]:
-        vals = retention[retention['Group'] == g]['Virus_Retention']
-        if len(vals) > 2 and vals.std() > 0.01:
-            valid_groups.append(g)
-    retention = retention[retention['Group'].isin(valid_groups)]
-    if len(retention) == 0:
-        print("  [WARN] No valid violin data, skipping Fig_A")
-        return
+    """图A: 小提琴+箱线 病毒占比(%) — 每样本独立计算，有分布"""
+    # 用 Virus_Pct（每样本独立），不是 Virus_Retention（需跨组匹配）
+    data = df[['Group', 'Virus_Pct']].dropna()
+    data = data[data['Virus_Pct'] > 0]
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    sns.violinplot(data=retention, x='Group', y='Virus_Retention',
-                   order=valid_groups, palette=PALETTE[1:1+len(valid_groups)],
-                   inner='box', cut=0, ax=ax)
-    ax.set_ylabel('Virus Read Retention (%)', fontsize=13)
-    ax.set_title('Host Depletion — Virus Retention', fontsize=14, fontweight='bold')
+    fig, ax = plt.subplots(figsize=(10, 6))
+    sns.violinplot(data=data, x='Group', y='Virus_Pct',
+                   order=GROUP_ORDER, palette=PALETTE[:len(GROUP_ORDER)],
+                   inner='box', cut=0, scale='width', ax=ax)
+    ax.set_ylabel('Virus Reads (%)', fontsize=13)
+    ax.set_title('Host Depletion — Virus Proportion per Sample', fontsize=14, fontweight='bold')
+    ax.set_yscale('log')
     ax.grid(axis='y', alpha=0.3)
+    ax.tick_params(axis='x', rotation=10)
     sns.despine()
     plt.tight_layout()
     plt.savefig(outpath, dpi=300, bbox_inches='tight')
