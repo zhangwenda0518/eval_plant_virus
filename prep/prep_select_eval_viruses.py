@@ -394,6 +394,14 @@ def main():
 
     # 4. 分层选取
     selected, log = stratified_select(records, args.n_viruses - len(forced), rng)
+    # 将强制包含的病毒插入 log 开头
+    for f in forced:
+        log.insert(0, {
+            "accession": f["accession"], "genome_type": f["genome_type"],
+            "topology": f["topology"], "molecule_type": f["molecule_type"],
+            "family": f["family"], "genus": f["genus"], "species": f["species"],
+            "length": f["length"], "host": f["host"],
+        })
     selected = forced + selected
 
     # 5. 检查: 候选不够时从其余类型补充
