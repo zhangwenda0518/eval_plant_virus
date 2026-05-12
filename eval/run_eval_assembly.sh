@@ -192,26 +192,26 @@ for gdir in "$OUTDIR"/group*_mut*/; do
                 > "$MH_OUT/log.txt" 2>&1 || log "[$SNAME] MH merge FAIL"
         fi
 
-        # M+H split+merge
+        # M+H split+merge — 复用已有的 refineC split 产物
         MH_SPLIT_OUT="$SDIR/MH_split_merge"
         if [ ! -f "$MH_SPLIT_OUT/merged.fasta" ]; then
-            MH_SPLIT_TMP="$SDIR/MH_split_tmp"
-            mkdir -p "$MH_SPLIT_TMP" "$MH_SPLIT_OUT"
-            cat "$MEGAHIT_CTG" "$RNAVIRAL_CTG" > "$MH_SPLIT_TMP/combined.fasta"
-            /usr/bin/time -v -o "$MH_SPLIT_OUT/time_split.log" \
-                refineC split --threads "$MERGE_THREADS" \
-                    --contigs "$MH_SPLIT_TMP/combined.fasta" \
-                    --prefix MH-split --output "$MH_SPLIT_TMP/split" \
-                    --frag-min-len "$FRAG_MIN_LEN" \
-                > "$MH_SPLIT_OUT/log_split.txt" 2>&1
-            MH_SPLIT_FA=$(ls "$MH_SPLIT_TMP/split"/*.fasta 2>/dev/null | head -1)
-            [ -z "$MH_SPLIT_FA" ] && MH_SPLIT_FA="$MH_SPLIT_TMP/combined.fasta"
-            /usr/bin/time -v -o "$MH_SPLIT_OUT/time_merge.log" \
-                refineC merge --threads "$MERGE_THREADS" \
-                    --contigs "$MH_SPLIT_FA" \
-                    --prefix MH-split-merge --output "$MH_SPLIT_OUT" \
-                    --min-id "$MIN_ID" --min-cov "$MIN_COV" \
-                > "$MH_SPLIT_OUT/log_merge.txt" 2>&1 || log "[$SNAME] MH split+merge FAIL"
+            mkdir -p "$MH_SPLIT_OUT"
+            # 收集已有的 split.fasta.gz
+            M_SPLIT=$(ls "$SDIR/${SNAME}_megahit_refineC"/*.split.fasta.gz 2>/dev/null | head -1)
+            H_SPLIT=$(ls "$SDIR/${SNAME}_rnaviralspades_refineC"/*.split.fasta.gz 2>/dev/null | head -1)
+            MH_SPLIT_INPUTS=""
+            [ -n "$M_SPLIT" ] && MH_SPLIT_INPUTS="$MH_SPLIT_INPUTS $M_SPLIT"
+            [ -n "$H_SPLIT" ] && MH_SPLIT_INPUTS="$MH_SPLIT_INPUTS $H_SPLIT"
+            if [ -n "$MH_SPLIT_INPUTS" ]; then
+                /usr/bin/time -v -o "$MH_SPLIT_OUT/time_merge.log" \
+                    refineC merge --threads "$MERGE_THREADS" \
+                        --contigs $MH_SPLIT_INPUTS \
+                        --prefix MH-split-merge --output "$MH_SPLIT_OUT" \
+                        --min-id "$MIN_ID" --min-cov "$MIN_COV" \
+                    > "$MH_SPLIT_OUT/log_merge.txt" 2>&1 || log "[$SNAME] MH split+merge FAIL"
+            else
+                log "[$SNAME] No refineC split files, skip MH split+merge"
+            fi
         fi
 
         # 全三者 merge (不 split)
