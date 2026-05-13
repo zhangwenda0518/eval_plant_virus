@@ -108,9 +108,8 @@ done
 
 TOTAL=${#ALL_TASKS[@]}
 if [ "$TOTAL" -eq 0 ]; then
-    log "No pending tasks. All done."
-    exit 0
-fi
+    log "Phase 1: No pending assembly tasks."
+else
 log "Scanned: $TOTAL pending tasks (batch=$BATCH, threads=$THREADS, jobs=$JOBS)"
 log "Input:  $SIMDIR"
 log "Output: $OUTDIR"
@@ -151,6 +150,7 @@ for ((i=0; i<TOTAL; i+=BATCH)); do
 done
 
 log "=== Phase 1: All assemblies done. ==="
+fi
 if [ "$SKIP_MERGE" = true ]; then
     log "Skipping RefineC merge. Run MetaQUAST manually."
     exit 0
@@ -159,16 +159,13 @@ fi
 # ===== 阶段2: 补充4组 RefineC merge（分批并行）=====
 log "=== Phase 2: 7-way RefineC merge (jobs=$MERGE_JOBS) ==="
 
-# 收集所有需处理的样本
 MERGE_TASKS=()
 for gdir in "$OUTDIR"/group*_mut*/; do
     [ ! -d "$gdir" ] && continue
-    for sdir in "$gdir"Master_*/; do
+    for sdir in "$gdir"Master_*rep1/; do
         [ ! -d "$sdir" ] && continue
-        SDIR="$sdir"
-        SNAME=$(basename "$sdir")
-        DONE_MARK="$SDIR/.merge_7way_done"
-        [ -f "$DONE_MARK" ] && continue
+        [ -f "$sdir/.merge_7way_done" ] && continue
+        SDIR="$sdir"; SNAME=$(basename "$sdir")
         MERGE_TASKS+=("$SDIR|$SNAME")
     done
 done
@@ -183,53 +180,26 @@ else
         for ((j=i; j<i+MERGE_JOBS && j<${#MERGE_TASKS[@]}; j++)); do
             IFS='|' read -r SDIR SNAME <<< "${MERGE_TASKS[$j]}"
             DONE_MARK="$SDIR/.merge_7way_done"
+
+            M=$(ls "$SDIR/${SNAME}_megahit.contig.fasta"* 2>/dev/null | head -1)
+            H=$(ls "$SDIR/${SNAME}_rnaviralspades.contig.fasta"* 2>/dev/null | head -1)
+            P=$(ls "$SDIR/${SNAME}_penguin.contig.fasta"* 2>/dev/null | head -1)
+            [ -z "$M" ] || [ -z "$H" ] && { touch "$DONE_MARK"; continue; }
+
+            log "  [$SNAME]"
             (
-                MEGAHIT_CTG=$(ls "$SDIR/${SNAME}_megahit.contig.fasta"* 2>/dev/null | head -1)
-                RNAVIRAL_CTG=$(ls "$SDIR/${SNAME}_rnaviralspades.contig.fasta"* 2>/dev/null | head -1)
-                PENGUIN_CTG=$(ls "$SDIR/${SNAME}_penguin.contig.fasta"* 2>/dev/null | head -1)
-
-                [ -z "$MEGAHIT_CTG" ] || [ -z "$RNAVIRAL_CTG" ] && { touch "$DONE_MARK"; exit 0; }
-
-                # M+H merge
-                MH_OUT="$SDIR/MH_merge"
-                [ ! -f "$MH_OUT/merged.fasta" ] && {
-                    mkdir -p "$MH_OUT"
-                    refineC merge --threads 4 --contigs "$MEGAHIT_CTG" "$RNAVIRAL_CTG" \
-                        --prefix MH-merge --output "$MH_OUT" --min-id "$MIN_ID" --min-cov "$MIN_COV" \
-                        > "$MH_OUT/log.txt" 2>&1
+                mkdir -p "$SDIR"/{MH_merge,MH_split_merge,ALL_merge}
+                [ ! -f "$SDIR/MH_merge/merged.fasta" ] && refineC merge --threads 4 --contigs "$M" "$H" --prefix mh --output "$SDIR/MH_merge" --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$SDIR/MH_merge/log.txt" 2>&1 &
+                [ ! -f "$SDIR/MH_split_merge/merged.fasta" ] && {
+                    S1=$(ls "$SDIR/${SNAME}_megahit_refineC"/*.split.fasta.gz 2>/dev/null|head -1)
+                    S2=$(ls "$SDIR/${SNAME}_rnaviralspades_refineC"/*.split.fasta.gz 2>/dev/null|head -1)
+                    IN=""; [ -n "$S1" ] && IN="$IN $S1"; [ -n "$S2" ] && IN="$IN $S2"
+                    [ -n "$IN" ] && refineC merge --threads 4 --contigs $IN --prefix mhs --output "$SDIR/MH_split_merge" --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$SDIR/MH_split_merge/log.txt" 2>&1
                 } &
-
-                # M+H split+merge
-                MH_SPLIT_OUT="$SDIR/MH_split_merge"
-                [ ! -f "$MH_SPLIT_OUT/merged.fasta" ] && {
-                    mkdir -p "$MH_SPLIT_OUT"
-                    M_SPLIT=$(ls "$SDIR/${SNAME}_megahit_refineC"/*.split.fasta.gz 2>/dev/null | head -1)
-                    H_SPLIT=$(ls "$SDIR/${SNAME}_rnaviralspades_refineC"/*.split.fasta.gz 2>/dev/null | head -1)
-                    MH_SPLIT_INPUTS=""
-                    [ -n "$M_SPLIT" ] && MH_SPLIT_INPUTS="$MH_SPLIT_INPUTS $M_SPLIT"
-                    [ -n "$H_SPLIT" ] && MH_SPLIT_INPUTS="$MH_SPLIT_INPUTS $H_SPLIT"
-                    [ -n "$MH_SPLIT_INPUTS" ] && {
-                        refineC merge --threads 4 --contigs $MH_SPLIT_INPUTS \
-                            --prefix MH-split-merge --output "$MH_SPLIT_OUT" \
-                            --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$MH_SPLIT_OUT/log.txt" 2>&1
-                    }
-                } &
-
-                # ALL merge
-                ALLM_OUT="$SDIR/ALL_merge"
-                ALLM_CTGS="$MEGAHIT_CTG $RNAVIRAL_CTG"
-                [ -n "$PENGUIN_CTG" ] && ALLM_CTGS="$ALLM_CTGS $PENGUIN_CTG"
-                [ ! -f "$ALLM_OUT/merged.fasta" ] && {
-                    mkdir -p "$ALLM_OUT"
-                    refineC merge --threads 4 --contigs $ALLM_CTGS \
-                        --prefix ALL-merge --output "$ALLM_OUT" \
-                        --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$ALLM_OUT/log.txt" 2>&1
-                } &
-
-                wait
-                touch "$DONE_MARK"
+                CTGS="$M $H"; [ -n "$P" ] && CTGS="$CTGS $P"
+                [ ! -f "$SDIR/ALL_merge/merged.fasta" ] && refineC merge --threads 4 --contigs $CTGS --prefix all --output "$SDIR/ALL_merge" --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$SDIR/ALL_merge/log.txt" 2>&1 &
+                wait; touch "$DONE_MARK"; echo "  [$SNAME] done"
             ) &
-            log "  [$SNAME] started"
         done
         wait
         log "=== Merge Batch $N done ==="
