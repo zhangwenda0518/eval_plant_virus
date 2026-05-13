@@ -220,7 +220,12 @@ else
                             --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$SDIR/ALL_merge/log.txt" 2>&1
                 } &
 
-                wait; touch "$DONE_MARK"; echo "  [$SNAME] done"
+                wait
+                # 解压 refineC 输出的 .fasta.gz
+                for d in "$SDIR"/{MH_merge,MH_split_merge,ALL_merge}; do
+                    [ -f "$d/merged.fasta.gz" ] && [ ! -f "$d/merged.fasta" ] && zcat "$d/merged.fasta.gz" > "$d/merged.fasta"
+                done
+                touch "$DONE_MARK"; echo "  [$SNAME] done"
             ) &
         done
         wait
