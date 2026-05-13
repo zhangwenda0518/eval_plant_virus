@@ -189,15 +189,34 @@ else
             log "  [$SNAME]"
             (
                 mkdir -p "$SDIR"/{MH_merge,MH_split_merge,ALL_merge}
-                [ ! -f "$SDIR/MH_merge/merged.fasta" ] && refineC merge --threads 4 --contigs "$M" "$H" --prefix mh --output "$SDIR/MH_merge" --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$SDIR/MH_merge/log.txt" 2>&1 &
+                # MH merge: cat 两个文件后传单个 contig
+                [ ! -f "$SDIR/MH_merge/merged.fasta" ] && {
+                    cat "$M" "$H" > "$SDIR/MH_merge/combined.fasta"
+                    refineC merge --threads 4 --contigs "$SDIR/MH_merge/combined.fasta" \
+                        --prefix mh --output "$SDIR/MH_merge" --min-id "$MIN_ID" --min-cov "$MIN_COV" \
+                        > "$SDIR/MH_merge/log.txt" 2>&1
+                } &
+
+                # MH split+merge: 复用已有的 split.fasta.gz
                 [ ! -f "$SDIR/MH_split_merge/merged.fasta" ] && {
                     S1=$(ls "$SDIR/${SNAME}_megahit_refineC"/*.split.fasta.gz 2>/dev/null|head -1)
                     S2=$(ls "$SDIR/${SNAME}_rnaviralspades_refineC"/*.split.fasta.gz 2>/dev/null|head -1)
-                    IN=""; [ -n "$S1" ] && IN="$IN $S1"; [ -n "$S2" ] && IN="$IN $S2"
-                    [ -n "$IN" ] && refineC merge --threads 4 --contigs $IN --prefix mhs --output "$SDIR/MH_split_merge" --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$SDIR/MH_split_merge/log.txt" 2>&1
+                    if [ -n "$S1" ] || [ -n "$S2" ]; then
+                        zcat $S1 $S2 2>/dev/null > "$SDIR/MH_split_merge/combined.fasta"
+                        refineC merge --threads 4 --contigs "$SDIR/MH_split_merge/combined.fasta" \
+                            --prefix mhs --output "$SDIR/MH_split_merge" \
+                            --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$SDIR/MH_split_merge/log.txt" 2>&1
+                    fi
                 } &
-                CTGS="$M $H"; [ -n "$P" ] && CTGS="$CTGS $P"
-                [ ! -f "$SDIR/ALL_merge/merged.fasta" ] && refineC merge --threads 4 --contigs $CTGS --prefix all --output "$SDIR/ALL_merge" --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$SDIR/ALL_merge/log.txt" 2>&1 &
+
+                # ALL merge: 三者 cat 合并
+                [ ! -f "$SDIR/ALL_merge/merged.fasta" ] && {
+                    cat "$M" "$H" ${P:+"$P"} > "$SDIR/ALL_merge/combined.fasta"
+                    refineC merge --threads 4 --contigs "$SDIR/ALL_merge/combined.fasta" \
+                        --prefix all --output "$SDIR/ALL_merge" \
+                        --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$SDIR/ALL_merge/log.txt" 2>&1
+                } &
+
                 wait; touch "$DONE_MARK"; echo "  [$SNAME] done"
             ) &
         done
