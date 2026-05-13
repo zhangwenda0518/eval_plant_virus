@@ -11,9 +11,16 @@ from tqdm import tqdm
 
 def parse_filename(basename):
     """
-    智能提取 Accession 和 LoD_Factor，兼容 _PE_R1 和 _PE_clean_R1
+    从新版 LoD 文件名提取 Accession 和 LoD_Factor
+    格式: LoD_Mixed_{ACCESSION}_{LoD}x_PE_[clean_]R1.fastq.gz
+    Accession: 字母+数字+版本号 (如 NC_001410.1, EU024120.1, OR489165.1)
     """
-    m = re.search(r'LoD_Mixed_(.*?)_(\d+\.\d+)_', basename)
+    # 匹配: LoD_Mixed_ + Accession(字母数字下划线.+版本号) + _ + LoD数字 + x
+    m = re.search(r'LoD_Mixed_([A-Za-z]{1,4}_?\d{4,}\.\d{1,2})_(\d+\.?\d*)x?_', basename)
+    if m:
+        return m.group(1), float(m.group(2))
+    # 兼容旧版: LoD_Mixed_xxx_0.0005_PE_R1
+    m = re.search(r'LoD_Mixed_([A-Za-z]{1,4}_?\d{4,}\.\d{1,2})_(\d+\.\d+)_', basename)
     if m:
         return m.group(1), float(m.group(2))
     return None, None
