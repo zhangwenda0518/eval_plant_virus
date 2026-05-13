@@ -46,8 +46,8 @@ show_help() {
     echo "  --threads N         单样本线程数 (default: 15)"
     echo "  --jobs N            assembly_pipeline 内部并发 (default: 4)"
     echo "  --merge-threads N   RefineC merge 线程 (default: 60)"
-    echo "  --min-id FLOAT      RefineC merge --min-id (default: 0.99)"
-    echo "  --min-cov FLOAT     RefineC merge --min-cov (default: 0.90)"
+    echo "  --min-id FLOAT      RefineC merge --min-id (default: 0.95)"
+    echo "  --min-cov FLOAT     RefineC merge --min-cov (default: 0.50)"
     echo "  --skip-7way         跳过7组对比阶段"
     echo "  -h, --help          显示帮助"
     exit 0
