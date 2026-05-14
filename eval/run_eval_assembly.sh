@@ -193,10 +193,10 @@ else
                 [ ! -f "$MH_DIR/${SNAME}_MH_merge.merged.fasta" ] && {
                     mkdir -p "$MH_DIR"
                     cat "$M" "$H" > "$MH_DIR/combined.fasta"
-                    /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MH_DIR/${SNAME}_MH_merge.mmseqs.time.mem.log" \
+                    /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MH_DIR/${SNAME}_MH_mmseqs.merge.time.mem.log" \
                         mmseqs easy-linclust "$MH_DIR/combined.fasta" "$MH_DIR/${SNAME}_MH_merge_cluster" "$MH_DIR/mmseqs_tmp" \
                             --cluster-mode 2 --min-seq-id 0.95 --threads 4 --cov-mode 1 -c 0.85 > "$MH_DIR/mmseqs.log" 2>&1
-                    /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MH_DIR/${SNAME}_MH_merge.refinec.time.mem.log" \
+                    /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MH_DIR/${SNAME}_MH_refinec.merge.time.mem.log" \
                         refineC merge --threads 4 --contigs "$MH_DIR/${SNAME}_MH_merge_cluster_rep_seq.fasta" \
                             --prefix "${SNAME}_MH_merge" --output "$MH_DIR/${SNAME}_MH_merge" \
                             --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$MH_DIR/refinec.log" 2>&1
@@ -245,4 +245,33 @@ else
     done
 fi
 
-log "=== Phase 2 done. Run MetaQUAST separately. ==="
+log "=== Phase 2 done. ==="
+
+# 阶段2资源汇总
+MERGE_SUMMARY="$LOGDIR/merge_resource_summary.tsv"
+echo -e "Sample\tMH_mmseqs_time(s)\tMH_mmseqs_mem(MB)\tMH_mmseqs_CPU%\tMH_refinec_time(s)\tMH_refinec_mem(MB)\tMH_refinec_CPU%\tMHSP_mmseqs_time(s)\tMHSP_mmseqs_mem(MB)\tMHSP_mmseqs_CPU%\tMHSP_refinec_time(s)\tMHSP_refinec_mem(MB)\tMHSP_refinec_CPU%\tALL_mmseqs_time(s)\tALL_mmseqs_mem(MB)\tALL_mmseqs_CPU%\tALL_refinec_time(s)\tALL_refinec_mem(MB)\tALL_refinec_CPU%" > "$MERGE_SUMMARY"
+
+for sdir in "$OUTDIR"/group*_mut*/Master_*rep1/; do
+    [ ! -d "$sdir" ] && continue
+    SNAME=$(basename "$sdir")
+    parse_tmm() { grep "$1" "$2" 2>/dev/null | grep -oP '[0-9.]+' || echo "0"; }
+
+    MH_MM="$sdir/${SNAME}_MH_merge/${SNAME}_MH_merge.mmseqs.time.mem.log"
+    MH_RC="$sdir/${SNAME}_MH_merge/${SNAME}_MH_merge.refinec.time.mem.log"
+    MHSP_MM="$sdir/${SNAME}_MH_split_merge/${SNAME}_MH_split_merge.mmseqs.time.mem.log"
+    MHSP_RC="$sdir/${SNAME}_MH_split_merge/${SNAME}_MH_split_merge.refinec.time.mem.log"
+    ALL_MM="$sdir/${SNAME}_ALL_merge/${SNAME}_ALL_merge.mmseqs.time.mem.log"
+    ALL_RC="$sdir/${SNAME}_ALL_merge/${SNAME}_ALL_merge.refinec.time.mem.log"
+
+    MH_MM_T=$(parse_tmm "Time:" "$MH_MM"); MH_MM_M_KB=$(parse_tmm "Memory:" "$MH_MM"); MH_MM_C=$(parse_tmm "CPU:" "$MH_MM")
+    MH_RC_T=$(parse_tmm "Time:" "$MH_RC"); MH_RC_M_KB=$(parse_tmm "Memory:" "$MH_RC"); MH_RC_C=$(parse_tmm "CPU:" "$MH_RC")
+    MHSP_MM_T=$(parse_tmm "Time:" "$MHSP_MM"); MHSP_MM_M_KB=$(parse_tmm "Memory:" "$MHSP_MM"); MHSP_MM_C=$(parse_tmm "CPU:" "$MHSP_MM")
+    MHSP_RC_T=$(parse_tmm "Time:" "$MHSP_RC"); MHSP_RC_M_KB=$(parse_tmm "Memory:" "$MHSP_RC"); MHSP_RC_C=$(parse_tmm "CPU:" "$MHSP_RC")
+    ALL_MM_T=$(parse_tmm "Time:" "$ALL_MM"); ALL_MM_M_KB=$(parse_tmm "Memory:" "$ALL_MM"); ALL_MM_C=$(parse_tmm "CPU:" "$ALL_MM")
+    ALL_RC_T=$(parse_tmm "Time:" "$ALL_RC"); ALL_RC_M_KB=$(parse_tmm "Memory:" "$ALL_RC"); ALL_RC_C=$(parse_tmm "CPU:" "$ALL_RC")
+
+    echo -e "$SNAME\t$MH_MM_T\t$(echo "scale=2; $MH_MM_M_KB/1024"|bc 2>/dev/null||echo 0)\t$MH_MM_C\t$MH_RC_T\t$(echo "scale=2; $MH_RC_M_KB/1024"|bc 2>/dev/null||echo 0)\t$MH_RC_C\t$MHSP_MM_T\t$(echo "scale=2; $MHSP_MM_M_KB/1024"|bc 2>/dev/null||echo 0)\t$MHSP_MM_C\t$MHSP_RC_T\t$(echo "scale=2; $MHSP_RC_M_KB/1024"|bc 2>/dev/null||echo 0)\t$MHSP_RC_C\t$ALL_MM_T\t$(echo "scale=2; $ALL_MM_M_KB/1024"|bc 2>/dev/null||echo 0)\t$ALL_MM_C\t$ALL_RC_T\t$(echo "scale=2; $ALL_RC_M_KB/1024"|bc 2>/dev/null||echo 0)\t$ALL_RC_C" >> "$MERGE_SUMMARY"
+done
+
+log "Merge resource summary: $MERGE_SUMMARY ($(wc -l < "$MERGE_SUMMARY") lines)"
+log "=== All done. Run MetaQUAST separately. ==="
