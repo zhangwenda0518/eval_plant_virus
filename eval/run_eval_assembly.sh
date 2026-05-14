@@ -193,9 +193,10 @@ else
                 [ ! -f "$MH_DIR/${SNAME}_MH_merge.merged.fasta" ] && {
                     mkdir -p "$MH_DIR"
                     cat "$M" "$H" > "$MH_DIR/combined.fasta"
-                    mmseqs easy-linclust "$MH_DIR/combined.fasta" "$MH_DIR/${SNAME}_MH_merge_cluster" "$MH_DIR/mmseqs_tmp" \
-                        --cluster-mode 2 --min-seq-id 0.95 --threads 4 --cov-mode 1 -c 0.85 > "$MH_DIR/log.txt" 2>&1
-                    /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MH_DIR/${SNAME}_MH_merge.time.mem.log" \
+                    /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MH_DIR/${SNAME}_MH_merge.mmseqs.time.mem.log" \
+                        mmseqs easy-linclust "$MH_DIR/combined.fasta" "$MH_DIR/${SNAME}_MH_merge_cluster" "$MH_DIR/mmseqs_tmp" \
+                            --cluster-mode 2 --min-seq-id 0.95 --threads 4 --cov-mode 1 -c 0.85 > "$MH_DIR/mmseqs.log" 2>&1
+                    /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MH_DIR/${SNAME}_MH_merge.refinec.time.mem.log" \
                         refineC merge --threads 4 --contigs "$MH_DIR/${SNAME}_MH_merge_cluster_rep_seq.fasta" \
                             --prefix "${SNAME}_MH_merge" --output "$MH_DIR/${SNAME}_MH_merge" \
                             --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$MH_DIR/refinec.log" 2>&1
@@ -210,9 +211,10 @@ else
                     if [ -n "$S1" ] || [ -n "$S2" ]; then
                         mkdir -p "$MHSP_DIR"
                         zcat $S1 $S2 2>/dev/null > "$MHSP_DIR/combined.fasta"
-                        mmseqs easy-linclust "$MHSP_DIR/combined.fasta" "$MHSP_DIR/${SNAME}_MH_split_merge_cluster" "$MHSP_DIR/mmseqs_tmp" \
-                            --cluster-mode 2 --min-seq-id 0.95 --threads 4 --cov-mode 1 -c 0.85 > "$MHSP_DIR/log.txt" 2>&1
-                        /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MHSP_DIR/${SNAME}_MH_split_merge.time.mem.log" \
+                        /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MHSP_DIR/${SNAME}_MH_split_merge.mmseqs.time.mem.log" \
+                            mmseqs easy-linclust "$MHSP_DIR/combined.fasta" "$MHSP_DIR/${SNAME}_MH_split_merge_cluster" "$MHSP_DIR/mmseqs_tmp" \
+                                --cluster-mode 2 --min-seq-id 0.95 --threads 4 --cov-mode 1 -c 0.85 > "$MHSP_DIR/mmseqs.log" 2>&1
+                        /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MHSP_DIR/${SNAME}_MH_split_merge.refinec.time.mem.log" \
                             refineC merge --threads 4 --contigs "$MHSP_DIR/${SNAME}_MH_split_merge_cluster_rep_seq.fasta" \
                                 --prefix "${SNAME}_MH_split_merge" --output "$MHSP_DIR/${SNAME}_MH_split_merge" \
                                 --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$MHSP_DIR/refinec.log" 2>&1
@@ -225,9 +227,10 @@ else
                 [ ! -f "$ALL_DIR/${SNAME}_ALL_merge.merged.fasta" ] && {
                     mkdir -p "$ALL_DIR"
                     cat "$M" "$H" ${P:+"$P"} > "$ALL_DIR/combined.fasta"
-                    mmseqs easy-linclust "$ALL_DIR/combined.fasta" "$ALL_DIR/${SNAME}_ALL_merge_cluster" "$ALL_DIR/mmseqs_tmp" \
-                        --cluster-mode 2 --min-seq-id 0.95 --threads 4 --cov-mode 1 -c 0.85 > "$ALL_DIR/log.txt" 2>&1
-                    /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$ALL_DIR/${SNAME}_ALL_merge.time.mem.log" \
+                    /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$ALL_DIR/${SNAME}_ALL_merge.mmseqs.time.mem.log" \
+                        mmseqs easy-linclust "$ALL_DIR/combined.fasta" "$ALL_DIR/${SNAME}_ALL_merge_cluster" "$ALL_DIR/mmseqs_tmp" \
+                            --cluster-mode 2 --min-seq-id 0.95 --threads 4 --cov-mode 1 -c 0.85 > "$ALL_DIR/mmseqs.log" 2>&1
+                    /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$ALL_DIR/${SNAME}_ALL_merge.refinec.time.mem.log" \
                         refineC merge --threads 4 --contigs "$ALL_DIR/${SNAME}_ALL_merge_cluster_rep_seq.fasta" \
                             --prefix "${SNAME}_ALL_merge" --output "$ALL_DIR/${SNAME}_ALL_merge" \
                             --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$ALL_DIR/refinec.log" 2>&1
