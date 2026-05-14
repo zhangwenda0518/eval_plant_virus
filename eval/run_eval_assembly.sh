@@ -211,10 +211,10 @@ else
                     if [ -n "$S1" ] || [ -n "$S2" ]; then
                         mkdir -p "$MHSP_DIR"
                         zcat $S1 $S2 2>/dev/null > "$MHSP_DIR/combined.fasta"
-                        /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MHSP_DIR/${SNAME}_MH_split_merge.mmseqs.time.mem.log" \
+                        /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MHSP_DIR/${SNAME}_MH_split_mmseqs.merge.time.mem.log" \
                             mmseqs easy-linclust "$MHSP_DIR/combined.fasta" "$MHSP_DIR/${SNAME}_MH_split_merge_cluster" "$MHSP_DIR/mmseqs_tmp" \
                                 --cluster-mode 2 --min-seq-id 0.95 --threads "$THREADS" --cov-mode 1 -c 0.85 > "$MHSP_DIR/mmseqs.log" 2>&1
-                        /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MHSP_DIR/${SNAME}_MH_split_merge.refinec.time.mem.log" \
+                        /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MHSP_DIR/${SNAME}_MH_split_refinec.merge.time.mem.log" \
                             refineC merge --threads "$THREADS" --contigs "$MHSP_DIR/${SNAME}_MH_split_merge_cluster_rep_seq.fasta" \
                                 --prefix "${SNAME}_MH_split_merge" --output "$MHSP_DIR/${SNAME}_MH_split_merge" \
                                 --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$MHSP_DIR/refinec.log" 2>&1
@@ -256,12 +256,12 @@ for sdir in "$OUTDIR"/group*_mut*/Master_*rep1/; do
     SNAME=$(basename "$sdir")
     parse_tmm() { grep "$1" "$2" 2>/dev/null | grep -oP '[0-9.]+' || echo "0"; }
 
-    MH_MM="$sdir/${SNAME}_MH_merge/${SNAME}_MH_merge.mmseqs.time.mem.log"
-    MH_RC="$sdir/${SNAME}_MH_merge/${SNAME}_MH_merge.refinec.time.mem.log"
-    MHSP_MM="$sdir/${SNAME}_MH_split_merge/${SNAME}_MH_split_merge.mmseqs.time.mem.log"
-    MHSP_RC="$sdir/${SNAME}_MH_split_merge/${SNAME}_MH_split_merge.refinec.time.mem.log"
-    ALL_MM="$sdir/${SNAME}_ALL_merge/${SNAME}_ALL_merge.mmseqs.time.mem.log"
-    ALL_RC="$sdir/${SNAME}_ALL_merge/${SNAME}_ALL_merge.refinec.time.mem.log"
+    MH_MM="$sdir/${SNAME}_MH_merge/${SNAME}_MH_mmseqs.merge.time.mem.log"
+    MH_RC="$sdir/${SNAME}_MH_merge/${SNAME}_MH_refinec.merge.time.mem.log"
+    MHSP_MM="$sdir/${SNAME}_MH_split_merge/${SNAME}_MH_split_mmseqs.merge.time.mem.log"
+    MHSP_RC="$sdir/${SNAME}_MH_split_merge/${SNAME}_MH_split_refinec.merge.time.mem.log"
+    ALL_MM="$sdir/${SNAME}_ALL_merge/${SNAME}_ALL_mmseqs.merge.time.mem.log"
+    ALL_RC="$sdir/${SNAME}_ALL_merge/${SNAME}_ALL_refinec.merge.time.mem.log"
 
     MH_MM_T=$(parse_tmm "Time:" "$MH_MM"); MH_MM_M_KB=$(parse_tmm "Memory:" "$MH_MM"); MH_MM_C=$(parse_tmm "CPU:" "$MH_MM")
     MH_RC_T=$(parse_tmm "Time:" "$MH_RC"); MH_RC_M_KB=$(parse_tmm "Memory:" "$MH_RC"); MH_RC_C=$(parse_tmm "CPU:" "$MH_RC")

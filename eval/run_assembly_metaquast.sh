@@ -28,9 +28,9 @@ for gdir in "$ASMDIR"/group*_mut*/; do
         MF=$(ls "$SDIR/${SNAME}_megahit.contig.fasta"* 2>/dev/null | head -1)
         RF=$(ls "$SDIR/${SNAME}_rnaviralspades.contig.fasta"* 2>/dev/null | head -1)
         PF=$(ls "$SDIR/${SNAME}_penguin.contig.fasta"* 2>/dev/null | head -1)
-        MHF="$SDIR/MH_merge/merged.fasta"
-        MHSF="$SDIR/MH_split_merge/merged.fasta"
-        AMF="$SDIR/ALL_merge/merged.fasta"
+        MHF="$SDIR/${SNAME}_MH_merge.merged.fasta"
+        MHSF="$SDIR/${SNAME}_MH_split_merge.merged.fasta"
+        AMF="$SDIR/${SNAME}_ALL_merge.merged.fasta"
         ASMF=$(ls "$SDIR/${SNAME}_all_tools_refineC_merge.merged.fasta"* 2>/dev/null | head -1)
 
         [ -n "$MF" ]   && CTGS="$CTGS $MF"   && LABELS="$LABELS Megahit"
@@ -58,7 +58,7 @@ mkdir -p "$CHIMDIR"
 
 for gdir in "$ASMDIR"/group*_mut*/; do
     [ ! -d "$gdir" ] && continue
-    for sdir in "$gdir"1.virus-assembly/*/; do
+    for sdir in "$gdir"Master_*rep1/; do
         SDIR="$sdir"
         SNAME=$(basename "$sdir")
 
@@ -67,9 +67,9 @@ for gdir in "$ASMDIR"/group*_mut*/; do
                 megahit) CTG=$(ls "$SDIR/${SNAME}_megahit.contig.fasta"* 2>/dev/null | head -1) ;;
                 rnaviralspades) CTG=$(ls "$SDIR/${SNAME}_rnaviralspades.contig.fasta"* 2>/dev/null | head -1) ;;
                 penguin) CTG=$(ls "$SDIR/${SNAME}_penguin.contig.fasta"* 2>/dev/null | head -1) ;;
-                MH_merge) CTG="$SDIR/MH_merge/merged.fasta" ;;
-                MH_split_merge) CTG="$SDIR/MH_split_merge/merged.fasta" ;;
-                ALL_merge) CTG="$SDIR/ALL_merge/merged.fasta" ;;
+                MH_merge) CTG="$SDIR/${SNAME}_MH_merge.merged.fasta" ;;
+                MH_split_merge) CTG="$SDIR/${SNAME}_MH_split_merge.merged.fasta" ;;
+                ALL_merge) CTG="$SDIR/${SNAME}_ALL_merge.merged.fasta" ;;
                 all_tools_refineC_merge) CTG=$(ls "$SDIR/${SNAME}_all_tools_refineC_merge.merged.fasta"* 2>/dev/null | head -1) ;;
             esac
             [ ! -f "$CTG" ] && continue
