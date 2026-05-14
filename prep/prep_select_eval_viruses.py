@@ -357,18 +357,26 @@ def main():
     parser.add_argument("--n-viruses", type=int, default=50, help="目标选取数量")
     parser.add_argument("--exclude", help="需排除的目录（含已选的.fasta）")
     parser.add_argument("--include", help="必须包含的病毒Accession (逗号分隔或文件)")
-    parser.add_argument("--n-groups", type=int, default=0, help="分层分组数量 (0=不分组, 如5则分成5组)")
+    parser.add_argument("--n-groups", type=int, default=0, help="分层分组数量 (0=不分组)")
+    parser.add_argument("--n-segmented", type=int, default=0, help="额外选取的节段病毒种类数 (0=不选取)")
     parser.add_argument("--outdir", required=True, help="输出目录")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
 
-    # 1. 加载ref_info
+    # 1a. 额外选取节段病毒
+    segmented_viruses = []
+    if args.n_segmented > 0:
+        segmented_viruses = _select_segmented_viruses(args.ref_info, args.ref_fasta, args.n_segmented, rng)
+
+    # 1b. 加载ref_info（非节段）
     records = load_ref_info(args.ref_info)
 
-    # 2. 排除已有
+    # 2. 排除已有和已选的节段病毒
     excluded = load_excluded_accessions(args.exclude)
+    seg_accs = {s["accession"] for s in segmented_viruses}
+    excluded |= seg_accs
     records = [r for r in records if r["accession"] not in excluded]
     print(f"[select] After exclusion: {len(records)} candidates")
 
@@ -428,9 +436,81 @@ def main():
     # 6. 写出
     write_output(selected, log, fasta_idx, args.outdir)
 
-    # 7. 按基因组类型分层分组（--n-groups=N）
+    # 7. 补充节段病毒到输出目录
+    if segmented_viruses:
+        for sv in segmented_viruses:
+            acc = sv["accession"]
+            rec = fasta_idx.get(acc)
+            if rec:
+                out_path = os.path.join(args.outdir, f"{acc}.fasta")
+                if not os.path.exists(out_path):
+                    SeqIO.write(rec, out_path, "fasta")
+                log.append({
+                    "accession": acc, "genome_type": sv["genome_type"],
+                    "topology": sv.get("topology",""), "molecule_type": sv.get("molecule_type",""),
+                    "family": sv["family"], "genus": sv["genus"], "species": sv["species"],
+                    "length": sv["length"], "host": sv.get("host",""),
+                })
+        log_df = pd.DataFrame(log)
+        log_df.to_csv(os.path.join(args.outdir, "selected_viruses.tsv"), sep="\t", index=False)
+
+    # 8. 按基因组类型分层分组（--n-groups=N）
     if args.n_groups and args.n_groups > 1:
         _write_groups(log, args.outdir, args.n_groups, rng)
+
+
+def _select_segmented_viruses(ref_info_path, ref_fasta, n_species, rng):
+    """从ICTV VMR中选取完整的节段病毒物种（所有节段齐全）"""
+    import csv
+    from collections import defaultdict
+    from Bio import SeqIO
+
+    # 加载所有序列的Accession→长度
+    fasta_idx = {}
+    for rec in SeqIO.parse(ref_fasta, "fasta"):
+        acc = rec.id.split()[0]
+        fasta_idx[acc] = len(rec.seq)
+
+    # 读ref_info，筛选Segmented + complete + ICTV完整
+    seg_by_species = defaultdict(list)
+    with open(ref_info_path, "r") as f:
+        for row in csv.DictReader(f, delimiter="\t"):
+            cat = str(row.get("Category", "")).strip().lower()
+            if "segmented" not in cat: continue
+            comp = str(row.get("Nuc_Completeness", "")).strip().lower()
+            if comp != "complete": continue
+            fam = row.get("VMR_Family", "").strip()
+            gen = row.get("VMR_Genus", "").strip()
+            sp = row.get("VMR_Species", "").strip()
+            if not fam or not gen or not sp: continue
+            acc = row.get("Accession", "").strip()
+            if not acc or acc not in fasta_idx: continue
+            seg_by_species[sp].append({
+                "accession": acc, "species": sp, "genus": gen, "family": fam,
+                "length": fasta_idx[acc],
+                "topology": row.get("Topology",""),
+                "molecule_type": row.get("Molecule_type",""),
+                "genome_type": "Segmented_RNA",
+                "host": row.get("Host",""),
+                "segment": row.get("Segment",""),
+            })
+
+    # 按节段数排序，选多节段的
+    candidates = [(sp, segs) for sp, segs in seg_by_species.items() if len(segs) >= 2]
+    candidates.sort(key=lambda x: -len(x[1]))
+    rng.shuffle(candidates)
+
+    # 选前n_species个物种，每个物种取所有节段
+    selected = []
+    for sp, segs in candidates:
+        if len(selected) >= n_species: break
+        # 取该物种的所有节段
+        for s in segs:
+            selected.append(s)
+        print(f"[segment] {sp}: {len(segs)} segments selected")
+
+    print(f"[segment] Selected {len(selected)} accessions from {n_species} species")
+    return selected
 
 
 def _write_groups(selection_log, outdir, n_groups, rng):
