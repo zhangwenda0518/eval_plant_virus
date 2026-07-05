@@ -124,6 +124,34 @@ python metrics/calc_abundance_accuracy.py --predictions quant.tsv --gold gold.ts
 python metrics/calc_classification_stratified.py --predictions integrated.tsv --meta test_meta.tsv --out stratified/
 ```
 
+## 真实数据验证
+
+本基准套件设计主要用于**模拟数据**（已知金标准）。在真实数据上运行时注意：
+
+| 评估 | 是否需要金标准 | 真实数据可用 |
+|------|:--:|------|
+| 评估一：宿主过滤 | 否 | 任何双端 FASTQ 均可 |
+| 评估二：已知病毒检测 | 是 | 需人工标注金标准 |
+| 评估三：病毒组装 | 是 | 需参考基因组 |
+| 评估四：候选病毒鉴定 | 是 | 需已知病毒列表 |
+| 评估五：病毒分类 | 是 | 需已知分类标签 |
+| 评估六：序列去重聚类 | 是* | 需可解析物种名 |
+| 评估七：宿主分类 | 是 | 需人工标注宿主 |
+
+\* 评估六可在无金标准时仅比较聚类一致性。
+
+### 新环境部署
+
+```bash
+git clone git@github.com:zhangwenda0518/eval_plant_virus.git
+cd eval_plant_virus
+conda env create -f environment.yml
+conda activate eval_plant_virus
+python config.py --check              # 检查数据库路径
+python run_benchmark.py status        # 查看阶段状态
+```
+```
+
 ## 七个评估环节
 
 | 评估 | 调度脚本 | 问题 | 主要指标 |
