@@ -6,6 +6,7 @@
 # 用法: bash run_eval_identification.sh [options]
 # ============================================================
 set -e
+BIN_DIR="$(cd "$(dirname "$0")/.." && pwd)/deps"
 
 LOGDIR="step7_logs"
 OUTDIR="step7_identification"
@@ -69,7 +70,7 @@ fi
 log "Running virus_identification13.py on $EVAL_SEQS"
 t0=$(date +%s)
 /usr/bin/time -v -o "$LOGDIR/identify.time" \
-    python ~/bin/virus_identification13.py \
+    python "$BIN_DIR/virus_identification.py" \
         --input "$EVAL_SEQS" -ext .fasta \
         --output "$OUTDIR/" \
         --identify_tools all --blast_mode filter \

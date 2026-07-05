@@ -8,6 +8,7 @@
 #   bash run_eval_host_depletion.sh --threads 20 --jobs 20
 # ============================================================
 set -e
+BIN_DIR="$(cd "$(dirname "$0")/.." && pwd)/deps"
 
 # ---- 默认值 ----
 LOGDIR="step5_host_free_logs"
@@ -118,7 +119,7 @@ fi
 # ---- D1: 仅 Kraken2 ----
 if [ "$SKIP_D1" != true ]; then
     run_with_log "D1_kraken2_only" "${OUTDIR}/D1_kraken2_only" \
-        python ~/bin/host_depletion.py \
+        python "$BIN_DIR/host_depletion.py" \
             --seq-type "$SEQ_TYPE" --tool "$TOOL" \
             -k "$HOST_K2" -x "$HOST_HISAT2" \
             -I "$INPUT_DIR" -O "${OUTDIR}/D1_kraken2_only/" \
@@ -130,7 +131,7 @@ fi
 # ---- D2: 仅 HISAT2 ----
 if [ "$SKIP_D2" != true ]; then
     run_with_log "D2_hisat2_only" "${OUTDIR}/D2_hisat2_only" \
-        python ~/bin/host_depletion.py \
+        python "$BIN_DIR/host_depletion.py" \
             --seq-type "$SEQ_TYPE" --tool "$TOOL" \
             -k "$HOST_K2" -x "$HOST_HISAT2" \
             -I "$INPUT_DIR" -O "${OUTDIR}/D2_hisat2_only/" \
@@ -142,7 +143,7 @@ fi
 # ---- D3: Kraken2 + HISAT2 ----
 if [ "$SKIP_D3" != true ]; then
     run_with_log "D3_k2_hisat2" "${OUTDIR}/D3_k2_hisat2" \
-        python ~/bin/host_depletion.py \
+        python "$BIN_DIR/host_depletion.py" \
             --seq-type "$SEQ_TYPE" --tool "$TOOL" \
             -k "$HOST_K2" -x "$HOST_HISAT2" \
             -I "$INPUT_DIR" -O "${OUTDIR}/D3_k2_hisat2/" \
@@ -154,7 +155,7 @@ fi
 # ---- D4: 完整三步 (Kraken2 + HISAT2 + rRNA) ----
 if [ "$SKIP_D4" != true ]; then
     run_with_log "D4_full" "${OUTDIR}/D4_full" \
-        python ~/bin/host_depletion.py \
+        python "$BIN_DIR/host_depletion.py" \
             --seq-type "$SEQ_TYPE" --tool "$TOOL" \
             -k "$HOST_K2" -x "$HOST_HISAT2" \
             -I "$INPUT_DIR" -O "${OUTDIR}/D4_full/" \

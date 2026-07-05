@@ -10,6 +10,7 @@
   4. 智能任务调度 (Task-level Parallelism): 跨病毒、跨梯度大并发，彻底根除 ID 冲突 Bug。
   5. 完美断点续传 (--resume)、原子写入与 repair.sh 终极 PE 配对修复。
   6. 🛡️【终极防弹突变引擎】利用替身机制彻底绕过 mutation-simulator 的输出路径 Bug。
+  7. ✨【新增】--all-in-one 模式生成 config.txt 和 SpikeIn_GroundTruth.tsv，临时文件目录规范化。
 """
 
 import os
@@ -21,6 +22,7 @@ import shutil
 import argparse
 import subprocess
 import glob
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 
@@ -170,8 +172,14 @@ def api_mutate(indir, outdir, rate, resume=False):
         path_map[in_path] = final_path
         
         if resume and os.path.exists(final_path) and os.path.getsize(final_path) > 10:
-            skipped += 1
-            continue
+            # 验证是有效 FASTA（排除 .fai / .txt 等垃圾文件）
+            with open(final_path) as check_f:
+                first_line = check_f.readline().strip()
+            if first_line.startswith('>'):
+                skipped += 1
+                continue
+            else:
+                os.remove(final_path)  # 无效文件，删除并重新生成
             
         tmp_in = os.path.join(outdir, f"tmp_in_{genome}")
         shutil.copy(in_path, tmp_in)
@@ -188,11 +196,22 @@ def api_mutate(indir, outdir, rate, resume=False):
             shutil.move(expected_out, final_path)
         else:
             found = glob.glob(os.path.join(outdir, f"{tmp_base}*"))
-            if found:
-                shutil.move(found[0], final_path)
+            fasta_only = [f for f in found if f.endswith(('.fa','.fasta')) and 'mutated' in os.path.basename(f)]
+            if fasta_only:
+                shutil.move(fasta_only[0], final_path)
+            elif found:
+                for f in sorted(found):
+                    try:
+                        with open(f) as cf:
+                            if cf.readline().strip().startswith('>'):
+                                shutil.move(f, final_path)
+                                print(f"  ⚠️ 防弹恢复: {os.path.basename(f)} -> {os.path.basename(final_path)}")
+                                break
+                    except: pass
+                else:
+                    print(f"  ⚠️ mutation-simulator 对 {genome} 静默失败，跳过")
             else:
-                print(f"❌ 严重错误: 突变模拟器彻底失败！请检查工具是否安装正确。")
-                sys.exit(1)
+                print(f"  ⚠️ mutation-simulator 对 {genome} 静默失败，跳过")
                 
         if os.path.exists(tmp_in): os.remove(tmp_in)
         txt_log = os.path.join(outdir, f"{tmp_base}_mutated_mutations.txt")
@@ -235,7 +254,7 @@ def api_gen_config(indir, read_len, depth=None, total_reads=None):
             
     return config_dict
 
-def api_run_sim(config_dict, out_prefix, mode, read_len, profile, seed, threads=1, frag_mean=300, frag_std=50, resume=False):
+def api_run_sim(config_dict, out_prefix, mode, read_len, profile, seed, threads=1, frag_mean=250, frag_std=15, resume=False):
     final_r1 = f"{out_prefix}_PE_R1.fastq.gz" if mode == "PE" else f"{out_prefix}_SE.fastq.gz"
     final_r2 = f"{out_prefix}_PE_R2.fastq.gz" if mode == "PE" else None
     
@@ -253,7 +272,7 @@ def api_run_sim(config_dict, out_prefix, mode, read_len, profile, seed, threads=
         
         art_seed = int(seed + idx * 777) % 2147483647 
         
-        cmd = ["art_illumina", "-ss", profile, "-i", ref, "-l", str(read_len), "-na", "-q", "-rs", str(art_seed), "-o", out_base]
+        cmd = ["art_illumina", "-ss", profile, "-i", ref, "-l", str(read_len), "-na", "-q", "-qs", "40", "-qs2", "40", "-rs", str(art_seed), "-o", out_base]
         if mode == "PE": 
             cmd.extend(["-p", "-m", str(frag_mean), "-s", str(frag_std), "-f", f"{fold_cov:.6f}"])
         else: 
@@ -284,7 +303,7 @@ def api_run_sim(config_dict, out_prefix, mode, read_len, profile, seed, threads=
         run_shuffle_atomic(raw_r2, seed, tmp_r2)
         
         if shutil.which("repair.sh"):
-            run_cmd(["repair.sh", f"in1={tmp_r1}", f"in2={tmp_r2}", f"out1={final_r1}", f"out2={final_r2}", "overwrite=true"])
+            run_cmd(["repair.sh", f"in1={tmp_r1}", f"in2={tmp_r2}", f"out1={final_r1}", f"out2={final_r2}", "overwrite=true", "qin=33"])
             os.remove(tmp_r1); os.remove(tmp_r2)
         else:
             os.rename(tmp_r1, final_r1); os.rename(tmp_r2, final_r2)
@@ -327,96 +346,180 @@ def api_subsample(r1, r2, se, mode, outdir, depths, repeats, threads, resume=Fal
     skipped = sum(f.result() for f in futures)
     if skipped > 0: print(f"  ⏭️ [断点续传] 跳过了 {skipped} 个已完成的抽样文件")
 
-def api_lod_test(bg_ref, target_paths, bg_reads, depths, read_len, mode, outdir, threads, seed, resume=False):
+def api_lod_test(bg_ref, target_paths, bg_reads, depths, read_len, mode, outdir, threads, seed, resume=False, all_in_one=False):
     """
     💎 最核心的 Spike-in (掺入) 策略：固定宿主背景，按指定的 Depth 掺入病毒 Reads，并生成金标准报告。
+    改进: all-in-one 模式输出 config.txt 和 SpikeIn_GroundTruth.tsv，所有临时文件放入临时目录。
     """
     os.makedirs(outdir, exist_ok=True)
     
-    print(f"\n[LoD 测试] 正在生成共享宿主背景 (指定 {bg_reads} Reads，单线程运行约需数分钟)...")
-    bg_reads_even = bg_reads + 1 if bg_reads % 2 != 0 else bg_reads
-    
-    bg_prefix = os.path.join(outdir, "Shared_Background")
-    tmp_bg_r1, tmp_bg_r2 = api_run_sim({bg_ref: bg_reads_even}, bg_prefix, mode, read_len, "HS25", seed, threads=2, resume=resume)
-    
-    tasks = [(v_path, d) for v_path in target_paths for d in depths]
-    print(f"  -> 准备完毕！启动 {threads} 个并发进程，跨 {len(target_paths)} 个病毒与 {len(depths)} 个深度梯度同时掺入...")
-
-    def process_lod_task(task_args):
-        v_path, target_depth = task_args
-        virus_name = os.path.splitext(os.path.basename(v_path))[0]
-        mix_prefix = os.path.join(outdir, f"LoD_Mixed_{virus_name}_{target_depth}x")
-        mix_r1 = f"{mix_prefix}_PE_R1.fastq.gz" if mode == "PE" else f"{mix_prefix}_SE.fastq.gz"
-        mix_r2 = f"{mix_prefix}_PE_R2.fastq.gz" if mode == "PE" else None
-
-        if resume and is_done([mix_r1, mix_r2] if mode == "PE" else [mix_r1]):
-            return
-
-        genome_len = get_fasta_length(v_path)
-        if genome_len == 0: return
+    # 创建临时根目录，存放所有中间文件
+    temp_root = tempfile.mkdtemp(prefix="lod_temp_", dir=outdir)
+    try:
+        print(f"\n[LoD 测试] 正在生成共享宿主背景 (指定 {bg_reads} Reads，单线程运行约需数分钟)...")
+        bg_reads_even = bg_reads + 1 if bg_reads % 2 != 0 else bg_reads
         
-        # 严谨的 Depth -> Reads 数学换算
-        v_reads = math.ceil((target_depth * genome_len) / read_len)
-        v_reads = v_reads + 1 if v_reads % 2 != 0 else v_reads
-        if v_reads <= 0: return
-
-        v_prefix = os.path.join(outdir, f"tmp_{virus_name}_{target_depth}x")
-        art_seed = int(seed + target_depth * 10000) % 2147483647
+        bg_prefix = os.path.join(temp_root, "Shared_Background")
+        tmp_bg_r1, tmp_bg_r2 = api_run_sim({bg_ref: bg_reads_even}, bg_prefix, mode, read_len, "HS25", seed, threads=2, resume=resume)
         
-        tmp_v_r1, tmp_v_r2 = api_run_sim({v_path: v_reads}, v_prefix, mode, read_len, "HS25", art_seed, threads=2, resume=resume)
-
-        if mode == "PE":
-            raw_r1, raw_r2 = f"{mix_prefix}_rawR1.fq.gz", f"{mix_prefix}_rawR2.fq.gz"
-            concat_files_binary([tmp_bg_r1, tmp_v_r1], raw_r1)
-            concat_files_binary([tmp_bg_r2, tmp_v_r2], raw_r2)
-            tmp_r1, tmp_r2 = f"{mix_prefix}_tmpR1.fq.gz", f"{mix_prefix}_tmpR2.fq.gz"
+        if all_in_one:
+            # ---------- all-in-one 模式：混合所有病毒到一个样本，并生成 config.txt 和真值表 ----------
+            out_prefix = os.path.join(outdir, "Host_Depletion_Mixed")
+            out_r1 = f"{out_prefix}_PE_R1.fastq.gz"
+            out_r2 = f"{out_prefix}_PE_R2.fastq.gz"
+            if resume and is_done([out_r1, out_r2]):
+                print("  [resume] All-in-one exists, skip")
+                return
             
+            if len(depths) != 1:
+                print("⚠️ Warning: --all-in-one 模式建议只给一个 depth 值，将使用 depths[0]")
+            target_depth = depths[0]
+            
+            # 收集每个病毒的配置信息，同时写入 config.txt 和真值表
+            config_lines = []  # 用于 config.txt: path\treads
+            truth_lines = []   # 用于 SpikeIn_GroundTruth.tsv: 病毒名、深度、长度、Host_Reads、Virus_Reads、Total_Reads、丰度
+            truth_lines.append("Virus_File\tTarget_Depth(x)\tGenome_Length(bp)\tHost_Reads\tVirus_Reads\tTotal_Reads\tTrue_Virus_Abundance(%)")
+            
+            all_virus_r1, all_virus_r2 = [], []
+            for v_path in tqdm(target_paths, desc="Generating virus reads"):
+                gl = get_fasta_length(v_path)
+                if gl == 0:
+                    continue
+                raw_v_reads = (target_depth * gl) / read_len
+                v_reads = math.ceil(raw_v_reads)
+                v_reads = v_reads + 1 if v_reads % 2 != 0 else v_reads
+                if v_reads <= 0:
+                    continue
+                
+                # config.txt 格式：路径\treads
+                config_lines.append(f"{v_path}\t{v_reads}")
+                
+                total = bg_reads_even + v_reads
+                abundance = (v_reads / total) * 100
+                truth_lines.append(f"{os.path.basename(v_path)}\t{target_depth}\t{gl}\t{bg_reads_even}\t{v_reads}\t{total}\t{abundance:.6f}")
+                
+                v_prefix = os.path.join(temp_root, f"virus_{os.path.basename(v_path)}")
+                v1, v2 = api_run_sim({v_path: v_reads}, v_prefix, mode, read_len, "HS25", seed, threads=2, resume=resume)
+                all_virus_r1.append(v1)
+                if v2:
+                    all_virus_r2.append(v2)
+            
+            # 写入 config.txt
+            config_path = os.path.join(outdir, "config.txt")
+            with open(config_path, 'w') as f:
+                f.write("\n".join(config_lines))
+            print(f"✅ 病毒掺入配置已保存（config.txt 格式）: {config_path}")
+            
+            # 写入真值表 SpikeIn_GroundTruth.tsv
+            truth_path = os.path.join(outdir, "SpikeIn_GroundTruth.tsv")
+            with open(truth_path, 'w') as f:
+                f.write("\n".join(truth_lines))
+            print(f"✅ 病毒掺入真值表已保存: {truth_path}")
+            
+            # 合并、洗牌、修复
+            raw_r1 = os.path.join(temp_root, "mixed_raw_R1.fq.gz")
+            raw_r2 = os.path.join(temp_root, "mixed_raw_R2.fq.gz")
+            concat_files_binary([tmp_bg_r1] + all_virus_r1, raw_r1)
+            concat_files_binary([tmp_bg_r2] + all_virus_r2, raw_r2)
+            
+            tmp_r1 = os.path.join(temp_root, "mixed_tmp_R1.fq.gz")
+            tmp_r2 = os.path.join(temp_root, "mixed_tmp_R2.fq.gz")
             run_shuffle_atomic(raw_r1, seed, tmp_r1)
             run_shuffle_atomic(raw_r2, seed, tmp_r2)
             
             if shutil.which("repair.sh"):
-                run_cmd(["repair.sh", f"in1={tmp_r1}", f"in2={tmp_r2}", f"out1={mix_r1}", f"out2={mix_r2}", "overwrite=true"])
-                os.remove(tmp_r1); os.remove(tmp_r2)
+                run_cmd(["repair.sh", f"in1={tmp_r1}", f"in2={tmp_r2}", f"out1={out_r1}", f"out2={out_r2}", "overwrite=true", "qin=33"])
             else:
-                os.rename(tmp_r1, mix_r1); os.rename(tmp_r2, mix_r2)
-                
-            os.remove(raw_r1); os.remove(raw_r2)
-            os.remove(tmp_v_r1); os.remove(tmp_v_r2)
-        else:
-            raw_se = f"{mix_prefix}_rawSE.fq.gz"
-            concat_files_binary([tmp_bg_r1, tmp_v_r1], raw_se)
-            run_shuffle_atomic(raw_se, seed, mix_r1)
-            os.remove(raw_se)
-            os.remove(tmp_v_r1)
-
-    with ThreadPoolExecutor(max_workers=threads) as executor:
-        list(tqdm(executor.map(process_lod_task, tasks), total=len(tasks), desc="并行混样进度"))
-
-    # ================= 🚀 生成终极对账单 (Ground Truth Manifest) =================
-    manifest_path = os.path.join(outdir, "LoD_GroundTruth_Manifest.tsv")
-    print(f"\n  -> [收尾] 正在生成金标准对账单: {manifest_path}")
-    with open(manifest_path, 'w') as f:
-        # 写入表头
-        f.write("Sample_Name\tTarget_Virus\tTarget_Depth(x)\tHost_Reads\tVirus_Reads\tTotal_Reads\tTrue_Virus_Abundance(%)\n")
-        
-        for v_path in target_paths:
-            genome_len = get_fasta_length(v_path)
-            if genome_len == 0: continue
-            virus_name = os.path.splitext(os.path.basename(v_path))[0]
+                os.rename(tmp_r1, out_r1)
+                os.rename(tmp_r2, out_r2)
             
-            for d in depths:
-                v_reads = math.ceil((d * genome_len) / read_len)
-                v_reads = v_reads + 1 if v_reads % 2 != 0 else v_reads
-                if v_reads <= 0: continue
+            print(f"✅ All-in-one 混合样本生成: {out_r1} 和 {out_r2}")
+            return  # all-in-one 结束，不执行下面的逐任务循环
+        
+        # ---------- 非 all-in-one 模式：每个病毒/深度独立样本（原逻辑，仅临时目录调整） ----------
+        tasks = [(v_path, d) for v_path in target_paths for d in depths]
+        print(f"  -> 准备完毕！启动 {threads} 个并发进程，跨 {len(target_paths)} 个病毒与 {len(depths)} 个深度梯度同时掺入...")
+        
+        def process_lod_task(task_args):
+            v_path, target_depth = task_args
+            virus_name = os.path.splitext(os.path.basename(v_path))[0]
+            mix_prefix = os.path.join(outdir, f"LoD_Mixed_{virus_name}_{target_depth}x")
+            mix_r1 = f"{mix_prefix}_PE_R1.fastq.gz" if mode == "PE" else f"{mix_prefix}_SE.fastq.gz"
+            mix_r2 = f"{mix_prefix}_PE_R2.fastq.gz" if mode == "PE" else None
+            
+            if resume and is_done([mix_r1, mix_r2] if mode == "PE" else [mix_r1]):
+                return
+            
+            genome_len = get_fasta_length(v_path)
+            if genome_len == 0:
+                return
+            
+            v_reads = math.ceil((target_depth * genome_len) / read_len)
+            v_reads = v_reads + 1 if v_reads % 2 != 0 else v_reads
+            if v_reads <= 0:
+                return
+            
+            # 病毒模拟放入临时目录
+            v_prefix = os.path.join(temp_root, f"tmp_{virus_name}_{target_depth}x")
+            art_seed = int(seed + target_depth * 10000) % 2147483647
+            tmp_v_r1, tmp_v_r2 = api_run_sim({v_path: v_reads}, v_prefix, mode, read_len, "HS25", art_seed, threads=2, resume=resume)
+            
+            if mode == "PE":
+                raw_r1 = os.path.join(temp_root, f"{virus_name}_{target_depth}x_raw_R1.fq.gz")
+                raw_r2 = os.path.join(temp_root, f"{virus_name}_{target_depth}x_raw_R2.fq.gz")
+                concat_files_binary([tmp_bg_r1, tmp_v_r1], raw_r1)
+                concat_files_binary([tmp_bg_r2, tmp_v_r2], raw_r2)
                 
-                total = bg_reads_even + v_reads
-                true_abundance = (v_reads / total) * 100 if total > 0 else 0
-                sample_name = f"LoD_Mixed_{virus_name}_{d}x"
+                tmp_r1 = os.path.join(temp_root, f"{virus_name}_{target_depth}x_tmp_R1.fq.gz")
+                tmp_r2 = os.path.join(temp_root, f"{virus_name}_{target_depth}x_tmp_R2.fq.gz")
+                run_shuffle_atomic(raw_r1, seed, tmp_r1)
+                run_shuffle_atomic(raw_r2, seed, tmp_r2)
                 
-                # 双端测序环境下，1对 read 算作 1个片段 (fragment)，统计生成的片段数
-                f.write(f"{sample_name}\t{virus_name}\t{d}\t{bg_reads_even}\t{v_reads}\t{total}\t{true_abundance:.6f}\n")
-    print(f"✅ 金标准对账单已保存，下游可直接用于 P/R/F1 和 Spearman 评估！")
-    # ====================================================================================
+                if shutil.which("repair.sh"):
+                    run_cmd(["repair.sh", f"in1={tmp_r1}", f"in2={tmp_r2}", f"out1={mix_r1}", f"out2={mix_r2}", "overwrite=true", "qin=33"])
+                else:
+                    os.rename(tmp_r1, mix_r1)
+                    os.rename(tmp_r2, mix_r2)
+                # 清理病毒临时文件
+                for f in [raw_r1, raw_r2, tmp_v_r1, tmp_v_r2]:
+                    if os.path.exists(f):
+                        os.remove(f)
+            else:
+                # SE 模式类似处理
+                raw_se = os.path.join(temp_root, f"{virus_name}_{target_depth}x_raw_SE.fq.gz")
+                concat_files_binary([tmp_bg_r1, tmp_v_r1], raw_se)
+                run_shuffle_atomic(raw_se, seed, mix_r1)
+                os.remove(raw_se)
+                os.remove(tmp_v_r1)
+        
+        with ThreadPoolExecutor(max_workers=threads) as executor:
+            list(tqdm(executor.map(process_lod_task, tasks), total=len(tasks), desc="并行混样进度"))
+        
+        # 生成金标准对账单（原逻辑）
+        manifest_path = os.path.join(outdir, "LoD_GroundTruth_Manifest.tsv")
+        print(f"\n  -> [收尾] 正在生成金标准对账单: {manifest_path}")
+        with open(manifest_path, 'w') as f:
+            f.write("Sample_Name\tTarget_Virus\tTarget_Depth(x)\tHost_Reads\tVirus_Reads\tTotal_Reads\tTrue_Virus_Abundance(%)\n")
+            for v_path in target_paths:
+                genome_len = get_fasta_length(v_path)
+                if genome_len == 0:
+                    continue
+                virus_name = os.path.splitext(os.path.basename(v_path))[0]
+                for d in depths:
+                    v_reads = math.ceil((d * genome_len) / read_len)
+                    v_reads = v_reads + 1 if v_reads % 2 != 0 else v_reads
+                    if v_reads <= 0:
+                        continue
+                    total = bg_reads_even + v_reads
+                    true_abundance = (v_reads / total) * 100 if total > 0 else 0
+                    sample_name = f"LoD_Mixed_{virus_name}_{d}x"
+                    f.write(f"{sample_name}\t{virus_name}\t{d}\t{bg_reads_even}\t{v_reads}\t{total}\t{true_abundance:.6f}\n")
+        print(f"✅ 金标准对账单已保存，下游可直接用于 P/R/F1 和 Spearman 评估！")
+    
+    finally:
+        # 清理所有临时文件
+        shutil.rmtree(temp_root, ignore_errors=True)
+        print(f"🧹 已清理临时目录: {temp_root}")
 
 # ==========================================
 # 独立子命令 Wrapper
@@ -451,7 +554,7 @@ def cmd_lod_mix(args):
     check_dependencies()
     print("🦠 启动独立 LoD 大海捞针测试...")
     target_paths = resolve_targets(args.indir, args.targets)
-    api_lod_test(args.bgref, target_paths, args.bg_reads, args.depths, args.read_len, args.mode, args.outdir, args.threads, args.seed, args.resume)
+    api_lod_test(args.bgref, target_paths, args.bg_reads, args.depths, args.read_len, args.mode, args.outdir, args.threads, args.seed, args.resume, args.all_in_one)
     print("✅ LoD 测试数据集生成完毕！")
 
 def cmd_benchmark(args):
@@ -531,8 +634,9 @@ def main():
     p_sim.add_argument("-c", "--config", required=True); p_sim.add_argument("-o", "--out", default="Simulated_Data")
     p_sim.add_argument("--mode", choices=["SE", "PE"], default="PE"); p_sim.add_argument("--threads", type=int, default=8)
     p_sim.add_argument("-l", "--read-len", type=int, default=150); p_sim.add_argument("--profile", default="HS25")
-    p_sim.add_argument("--seed", type=int, default=42); p_sim.add_argument("-m", "--frag-mean", type=int, default=300)
+    p_sim.add_argument("--seed", type=int, default=42); 
     p_sim.add_argument("-s", "--frag-std", type=int, default=50); add_common_args(p_sim); p_sim.set_defaults(func=cmd_simulator)
+    p_sim.add_argument("-m", "--frag-mean", type=int, default=300)
 
     # Subsample Command
     p_sub = subparsers.add_parser("subsample")
@@ -549,6 +653,7 @@ def main():
     p_lod.add_argument("--mode", choices=["SE", "PE"], default="PE")
     p_lod.add_argument("-l", "--read-len", type=int, default=150); p_lod.add_argument("-o", "--outdir", default="LoD_Dataset")
     p_lod.add_argument("--seed", type=int, default=42); p_lod.add_argument("--threads", type=int, default=8)
+    p_lod.add_argument("--all-in-one", action="store_true", help="合并所有病毒到1个样本，并生成config.txt和SpikeIn_GroundTruth.tsv")
     add_common_args(p_lod); p_lod.set_defaults(func=cmd_lod_mix)
 
     # Benchmark Command

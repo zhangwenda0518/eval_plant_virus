@@ -4,6 +4,7 @@
 # 用法: bash run_assembly_metaquast.sh [ASMDIR] [REF] [OUTDIR]
 # ============================================================
 set -e
+BIN_DIR="$(cd "$(dirname "$0")/.." && pwd)/deps"
 
 ASMDIR="${1:-step6_assemblies}"
 REF="${2:-step6_ref_viruses.fasta}"
@@ -87,7 +88,7 @@ wait
 # 汇总嵌合率
 for blast_out in "$CHIMDIR"/*_blastn.tsv; do
     [ ! -f "$blast_out" ] && continue
-    python ~/bin/detect_chimeric_contigs.py \
+    python "$BIN_DIR/detect_chimeric_contigs.py" \
         -i "$blast_out" -o "${blast_out%.tsv}_chimeric.tsv" 2>/dev/null
 done
 log "Chimeric detection done: $CHIMDIR"

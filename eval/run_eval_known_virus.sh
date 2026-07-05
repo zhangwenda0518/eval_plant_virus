@@ -4,6 +4,7 @@
 # 支持断点续跑、时间/内存记录、预构建索引自动探测
 # ============================================================
 set -e
+BIN_DIR="$(cd "$(dirname "$0")/.." && pwd)/deps"
 
 # ---- 默认值 ----
 LOGDIR="step5_logs"
@@ -186,7 +187,7 @@ run_with_log() {
 # ---- 1. Salmon ----
 if [ "$SKIP_SALMON" != true ]; then
     run_with_log "salmon" "${OUTDIR}/salmon" \
-        python ~/bin/batch_virus_depth40.py \
+        python "$BIN_DIR/batch_virus_depth.py" \
             --input_dir "$INPUT_DIR" \
             --output_dir "${OUTDIR}/salmon" \
             --ref_info "$REF_INFO" \
@@ -199,7 +200,7 @@ fi
 # ---- 2. Bowtie2 ----
 if [ "$SKIP_BOWTIE2" != true ]; then
     run_with_log "bowtie2" "${OUTDIR}/bowtie2" \
-        python ~/bin/batch_virus_depth40.py \
+        python "$BIN_DIR/batch_virus_depth.py" \
             --input_dir "$INPUT_DIR" \
             --output_dir "${OUTDIR}/bowtie2" \
             --ref_info "$REF_INFO" \
@@ -212,7 +213,7 @@ fi
 # ---- 3. Minimap2 ----
 if [ "$SKIP_MINIMAP2" != true ]; then
     run_with_log "minimap2" "${OUTDIR}/minimap2" \
-        python ~/bin/batch_virus_depth40.py \
+        python "$BIN_DIR/batch_virus_depth.py" \
             --input_dir "$INPUT_DIR" \
             --output_dir "${OUTDIR}/minimap2" \
             --ref_info "$REF_INFO" \
@@ -225,11 +226,11 @@ fi
 # ---- 4. 批量多工具 ----
 if [ "$SKIP_MULTITOOL" != true ]; then
     run_with_log "multitool" "${OUTDIR}/multitool" \
-        python ~/bin/batch_class.reads.py \
+        python "$BIN_DIR/batch_class.reads.py" \
             -i "$INPUT_DIR" \
             -o "${OUTDIR}/multitool" \
             --db-dir "$MULTITOOL_DB" \
-            --tools "$(echo "$MULTITOOL_TOOLS" | tr ',' ' ')" \
+            --tools kraken2 kraken2x krakenuniq centrifuger kunpeng metabuli sylph kaiju \
             --jobs "$MULTITOOL_JOBS" --threads "$MULTITOOL_THREADS" || true
 fi
 

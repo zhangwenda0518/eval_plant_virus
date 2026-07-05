@@ -7,27 +7,46 @@
 ```
 eval_plant_virus/
 ├── README.md                           # 本文件
-├── config/default_paths.sh             # 默认数据库路径配置
+├── config.py                           # 集中路径配置 (替代旧的 config/default_paths.sh)
+├── environment.yml                     # Conda 环境依赖
+├── deps/bin/                           # 外部管线依赖 (13个脚本, 从 ~/bin/ 归入)
+│   ├── assembly_pipeline.py
+│   ├── host_depletion.py
+│   ├── virus_classifier.py             # <- MMPV-RNA 最新版
+│   ├── virus_identification.py         # <- MMPV-RNA 最新版
+│   ├── batch_class.merge.py / batch_class.reads.py
+│   ├── batch_virus_depth40.py
+│   ├── prepare_cami_input.py / report2cami.py / kraken2cami.py
+│   ├── run_cluster_pipeline.py
+│   └── prep_build_class_eval_seqs.py / virus_classifier_analysis14.R
 ├── prep/                               # 数据准备脚本
-│   ├── prep_select_eval_viruses.py     #  选取评估用病毒（非节段RefSeq完整基因组）
-│   ├── prep_build_id_eval_seqs.py      #  构建鉴定评估数据集（覆盖度梯度+EVE/陷阱）
-│   ├── prep_build_class_eval_seqs.py   #  构建分类评估数据集（防信息泄漏）
-│   └── prep_extract_conserved_traps.py #  提取保守结构域陷阱序列
-├── sim/                                # 模拟测序脚本
-│   └── virome_simulator.py             #  全功能模拟数据生成引擎
-├── eval/                               # 评估调度脚本
-│   ├── run_eval_known_virus.sh         #  评估一：已知病毒检测方法比较
-│   ├── run_eval_assembly.sh            #  评估二：病毒组装方法比较
-│   ├── run_eval_host_depletion.sh      #  宿主过滤消融实验
-│   ├── run_eval_identification.sh      #  评估三：候选病毒鉴定策略比较
-│   └── run_eval_classification.sh      #  评估四：病毒分类方法比较
-├── metrics/                            # 评估指标计算脚本
-│   ├── detect_chimeric_contigs.py      #  嵌合Contig检测
-│   ├── calc_auprc.py                   #  PR曲线/AUPRC计算
-│   ├── calc_abundance_accuracy.py      #  丰度定量准确性(Bray-Curtis/RMSE/Spearman)
-│   └── calc_classification_stratified.py # 分类按覆盖度分层报告
-└── report/                             # 汇总报告脚本（待完成）
-    └── summarize_benchmark.py
+│   ├── prep_select_eval_viruses.py     #  选取评估用病毒
+│   ├── prep_build_id_eval_seqs.py      #  构建鉴定评估数据集
+│   ├── prep_build_class_eval_seqs.py   #  构建分类评估数据集
+│   ├── prep_extract_conserved_traps.py #  保守结构域陷阱序列
+│   ├── prep_master_eval_dataset.py     #  主评估数据集生成
+│   ├── prep_master_eval.py             #  主评估入口
+│   └── prep_simulation_datasets.py     #  模拟数据集
+├── sim/                                # 模拟测序
+│   └── virome_simulator.py
+├── eval/                               # 评估调度
+│   ├── run_eval_known_virus.sh         #  评估一：已知病毒检测
+│   ├── run_eval_assembly.sh            #  评估二：病毒组装
+│   ├── run_eval_host_depletion.sh      #  宿主过滤消融
+│   ├── run_eval_identification.sh      #  评估三：候选病毒鉴定
+│   └── run_eval_classification.sh      #  评估四：病毒分类
+├── metrics/                            # 评估指标
+│   ├── benchmark_mq.py / benchmark_chimeric.py / benchmark_resource.py / benchmark_summarize.py
+│   ├── eval_identification.py / eval_identification2.py
+│   ├── eval_host_depletion.py / eval_host_prediction.py
+│   ├── eval_cluster_pipeline.py / eval_segmented_virus.py
+│   ├── run_full_analysis.py / opt_classifier_ensemble.py
+│   └── calc_auprc.py / calc_abundance_accuracy.py / calc_classification_stratified.py
+└── plots/                              # 绘图
+    ├── plot.cami.box.py / plot_opal_radar.py
+    ├── plot_host_depletion.py / plot_host_depletion.resources.py
+    ├── plot_classification_comparison.py
+    └── plot_identification_comparison.py / plot_identify.resources.py
 ```
 
 ## 快速开始
@@ -35,8 +54,12 @@ eval_plant_virus/
 ### 前置依赖
 
 ```bash
-conda install -c bioconda art iss seqkit bbtools pandas numpy biopython scipy scikit-learn
-pip install matplotlib seaborn
+# 一键创建 conda 环境
+conda env create -f environment.yml
+conda activate eval_plant_virus
+
+# 检查路径配置
+python config.py --check
 ```
 
 ### Step 1: 选取50个评估用病毒

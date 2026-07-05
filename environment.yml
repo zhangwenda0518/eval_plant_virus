@@ -1,0 +1,94 @@
+name: eval_plant_virus
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+
+dependencies:
+  - python=3.10
+  - pip
+  - r-base>=4.2
+
+  # Python 核心
+  - biopython
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - tqdm
+  - polars
+  - umap-learn
+  - hdbscan
+  - openpyxl
+
+  # R 包
+  - r-optparse
+  - r-data.table
+  - r-ggplot2
+  - r-venndiagram
+  - r-ggvenndiagram
+  - r-gridextra
+  - r-stringr
+  - r-rcolorbrewer
+  - r-scales
+  - r-cowplot
+  - r-patchwork
+  - r-parallelly
+  - r-reshape2
+
+  # ── CLI 工具 ──
+  # 测序模拟
+  - art
+  - seqkit
+  # 组装
+  - megahit
+  - spades
+  # 比对
+  - hisat2
+  - bowtie2
+  - minimap2
+  - bwa
+  # K-mer/分类
+  - kraken2
+  - krakenuniq
+  - salmon
+  # 搜索
+  - blast
+  - diamond
+  # 聚类
+  - cd-hit
+  - mmseqs2
+  - vsearch
+  # 质控/评估
+  - quast
+  - bbtools
+  - gffread
+
+  - pip:
+      - mutation-simulator
+
+# ── 手动安装的工具 ──
+# 以下工具不在 conda 中，需手动安装:
+#
+#   centrifuger    https://github.com/mourisl/centrifuger
+#   sylph          https://github.com/bluenote-1577/sylph
+#   kaiju          https://github.com/bioinformatics-centre/kaiju
+#   metabuli       https://github.com/nick-youngblut/MetaBuli
+#   kunpeng        (内部工具)
+#   VirBot         https://github.com/GreyGuoweiChen/VirBot
+#   VirHunter      https://github.com/ncbi/VirHunter
+#   VirSorter2     https://github.com/jiarong/VirSorter2
+#   ViralVerify    https://github.com/ablab/viralVerify
+#   geNomad        https://github.com/apcamargo/genomad
+#   ViraLM         https://github.com/ChengPENG-wolf/ViraLM
+#   RdRpCatch      https://github.com/ababaei/RdRpCatch
+#   CAT            https://github.com/dutilh/CAT
+#   VITAP          https://github.com/NCBI-Codeathons/virome-tools
+#   ACVirus        (内部工具)
+#   vConTACT3      https://github.com/RyanCook94/vConTACT3
+#   RefineC        https://github.com/sinafakhraei/RefineC
+#   Penguin        (SPAdes fork for RNA viruses)
+#   RNAVirHost     https://github.com/WizardFPS/RNA-Virus-Host-Prediction
+#   PhaBOX/PhaGCN  https://github.com/KennthShang/PhaBOX

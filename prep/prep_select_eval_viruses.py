@@ -6,7 +6,8 @@
 
 选取条件（硬约束）:
   - Category = NonSegmented 或包含 NonSegmented（排除节段病毒，简化评估）
-  - Sequence_Type = RefSeq（只要 RefSeq 参考序列，确保质量）
+  - Category = NonSegmented 或包含 NonSegmented（排除普通节段病毒）
+  - Nuc_Completeness = complete（完整基因组）
   - ICTV 分类完整（有 Species_ICTV / VMR_Genus / VMR_Family）
   - Nuc_Completeness = complete（完整基因组）
 
@@ -140,6 +141,7 @@ def load_ref_info(path):
         reader = csv.DictReader(f, delimiter="\t")
         for row in reader:
             # 硬约束1: Category 非节段（排除 Segmented，保留 NonSegmented 等）
+            seq_type = str(row.get("Sequence_Type", "")).strip()
             cat = str(row.get("Category", "")).strip()
             if "segmented" in cat.lower() and "nonsegmented" not in cat.lower():
                 excluded_reasons["segmented"] += 1
@@ -188,8 +190,10 @@ def load_ref_info(path):
                 continue
 
             gtype, subtype = classify_genome_type(row)
+            taxid = str(row.get("Taxid", "")).strip()
             records.append({
                 "accession": acc,
+                "taxid": taxid,
                 "species": species,
                 "genus": genus,
                 "family": family,
@@ -297,6 +301,7 @@ def stratified_select(records, n_total, rng):
             selected.append(p)
             selection_log.append({
                 "accession": p["accession"],
+                "taxid": p.get("taxid", ""),
                 "genome_type": p["genome_type"],
                 "topology": p["topology"],
                 "molecule_type": p["molecule_type"],
@@ -405,7 +410,8 @@ def main():
     # 将强制包含的病毒插入 log 开头
     for f in forced:
         log.insert(0, {
-            "accession": f["accession"], "genome_type": f["genome_type"],
+            "accession": f["accession"], "taxid": f.get("taxid",""),
+            "genome_type": f["genome_type"],
             "topology": f["topology"], "molecule_type": f["molecule_type"],
             "family": f["family"], "genus": f["genus"], "species": f["species"],
             "length": f["length"], "host": f["host"],
@@ -423,6 +429,7 @@ def main():
                 selected.append(e)
                 log.append({
                     "accession": e["accession"],
+                    "taxid": e.get("taxid", ""),
                     "genome_type": e["genome_type"],
                     "topology": e["topology"],
                     "molecule_type": e["molecule_type"],
@@ -446,7 +453,8 @@ def main():
                 if not os.path.exists(out_path):
                     SeqIO.write(rec, out_path, "fasta")
                 log.append({
-                    "accession": acc, "genome_type": sv["genome_type"],
+                    "accession": acc, "taxid": sv.get("taxid",""),
+                    "genome_type": sv["genome_type"],
                     "topology": sv.get("topology",""), "molecule_type": sv.get("molecule_type",""),
                     "family": sv["family"], "genus": sv["genus"], "species": sv["species"],
                     "length": sv["length"], "host": sv.get("host",""),
@@ -460,7 +468,7 @@ def main():
 
 
 def _select_segmented_viruses(ref_info_path, ref_fasta, n_species, rng):
-    """从ICTV VMR中选取完整的节段病毒物种（所有节段齐全）"""
+    """从ICTV中选取完整的节段病毒物种 — 按 Taxid 分组（同一Taxid的不同accession = 同一物种的所有节段）"""
     import csv
     from collections import defaultdict
     from Bio import SeqIO
@@ -471,45 +479,100 @@ def _select_segmented_viruses(ref_info_path, ref_fasta, n_species, rng):
         acc = rec.id.split()[0]
         fasta_idx[acc] = len(rec.seq)
 
-    # 读ref_info，筛选Segmented + complete + ICTV完整
-    seg_by_species = defaultdict(list)
+    # 读ref_info:
+    #   Sequence_Type (列6) 含ICTV, Category (列7) = Segmented_Complete（不是普通Segmented）
+    #   按 Taxid 分组 — 相同 Taxid 的不同 accessions 即该物种的所有节段
+    seg_by_taxid = defaultdict(list)
     with open(ref_info_path, "r") as f:
         for row in csv.DictReader(f, delimiter="\t"):
-            cat = str(row.get("Category", "")).strip().lower()
-            if "segmented" not in cat: continue
+            seq_type = str(row.get("Sequence_Type", "")).strip()
+            cat = str(row.get("Category", "")).strip()
+            # 必须: 包含 ICTV + Segmented_Complete
+            if "ICTV" not in seq_type or cat != "Segmented_Complete":
+                continue
             comp = str(row.get("Nuc_Completeness", "")).strip().lower()
-            if comp != "complete": continue
-            fam = row.get("VMR_Family", "").strip()
-            gen = row.get("VMR_Genus", "").strip()
-            sp = row.get("VMR_Species", "").strip()
-            if not fam or not gen or not sp: continue
+            if comp != "complete":
+                continue
             acc = row.get("Accession", "").strip()
-            if not acc or acc not in fasta_idx: continue
-            seg_by_species[sp].append({
-                "accession": acc, "species": sp, "genus": gen, "family": fam,
+            taxid = str(row.get("Taxid", "")).strip()
+            if not acc or not taxid or acc not in fasta_idx:
+                continue
+            sp = row.get("VMR_Species", "").strip()
+            gen = row.get("VMR_Genus", "").strip()
+            fam = row.get("VMR_Family", "").strip()
+            seg_by_taxid[taxid].append({
+                "accession": acc, "taxid": taxid,
+                "species": sp, "genus": gen, "family": fam,
                 "length": fasta_idx[acc],
                 "topology": row.get("Topology",""),
                 "molecule_type": row.get("Molecule_type",""),
                 "genome_type": "Segmented_RNA",
                 "host": row.get("Host",""),
-                "segment": row.get("Segment",""),
             })
 
-    # 按节段数排序，选多节段的
-    candidates = [(sp, segs) for sp, segs in seg_by_species.items() if len(segs) >= 2]
+    # 排除类病毒相关（Pospiviroidae等）— 它们不是真正的节段病毒
+    viroid_families = {"Pospiviroidae", "Avsunviroidae"}
+    seg_by_taxid = {
+        taxid: segs for taxid, segs in seg_by_taxid.items()
+        if segs[0].get("family", "") not in viroid_families
+    }
+
+    # 按节段数排序 → 优先多节段
+    candidates = [(taxid, segs) for taxid, segs in seg_by_taxid.items() if len(segs) >= 2]
     candidates.sort(key=lambda x: -len(x[1]))
-    rng.shuffle(candidates)
+    print(f"[segment] Found {len(candidates)} multi-segment ICTV species")
 
-    # 选前n_species个物种，每个物种取所有节段
+    # 去重: 同一物种名只选一次
+    seen_species = set()
+    unique_candidates = []
+    for taxid, segs in candidates:
+        sp = segs[0]["species"]
+        if sp and sp in seen_species:
+            continue
+        if sp:
+            seen_species.add(sp)
+        unique_candidates.append((taxid, segs))
+
+    # 按节段数分bin随机选取
+    # 2-3节段 / 4-7节段 / 8+节段 各选一些
+    bins = {
+        "few": [c for c in unique_candidates if len(c[1]) <= 3],
+        "medium": [c for c in unique_candidates if 4 <= len(c[1]) <= 7],
+        "many": [c for c in unique_candidates if len(c[1]) >= 8],
+    }
+    rng.shuffle(bins["few"])
+    rng.shuffle(bins["medium"])
+    rng.shuffle(bins["many"])
+
     selected = []
-    for sp, segs in candidates:
-        if len(selected) >= n_species: break
-        # 取该物种的所有节段
-        for s in segs:
-            selected.append(s)
-        print(f"[segment] {sp}: {len(segs)} segments selected")
+    # 从每个bin各取约 n_species/3 个
+    per_bin = max(1, n_species // 3)
+    for bin_name in ["many", "medium", "few"]:
+        for taxid, segs in bins[bin_name][:per_bin]:
+            for s in segs:
+                selected.append(s)
+            sp = segs[0]["species"]
+            print(f"[segment] {sp} (taxid={taxid}): {len(segs)} segments")
 
-    print(f"[segment] Selected {len(selected)} accessions from {n_species} species")
+        # 如果够了就停
+        species_count = len(set(s["taxid"] for s in selected))
+        if species_count >= n_species:
+            break
+
+    # 如果还不够，从其余候选补充
+    if len(set(s["taxid"] for s in selected)) < n_species:
+        for taxid, segs in unique_candidates:
+            if len(set(s["taxid"] for s in selected)) >= n_species:
+                break
+            if taxid in {s["taxid"] for s in selected}:
+                continue
+            for s in segs:
+                selected.append(s)
+            sp = segs[0]["species"]
+            print(f"[segment] (fill) {sp} (taxid={taxid}): {len(segs)} segments")
+
+    n_species_selected = len(set(s["taxid"] for s in selected))
+    print(f"[segment] Selected {len(selected)} accessions from {n_species_selected} species")
     return selected
 
 

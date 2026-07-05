@@ -8,6 +8,7 @@
 #   bash run_eval_assembly.sh --sim-data ./data --output-dir ./asm --batch 3 --threads 20 --jobs 5
 # ============================================================
 set -e
+BIN_DIR="$(cd "$(dirname "$0")/.." && pwd)/deps"
 
 # ---- 默认值 ----
 SIMDIR="step2_benchmark_data"
@@ -90,21 +91,54 @@ if [ ! -f "$REF_FASTA" ]; then
 fi
 
 # ---- 自动扫描 ----
+# 支持三种数据结构:
+#   A) 新平坦结构: $SIMDIR/eval3_sub_{depth}_R1.fastq.gz
+#   B) 旧分组结构: $SIMDIR/group_*/Dataset_Mut_*pct/Jackknife_Subsamples/
+#   C) 嵌套结构: $SIMDIR/{virus}_depth{N}_rep{R}/Host_Depletion_Mixed_PE_R*.fastq.gz
 ALL_TASKS=()
-for gdir in "$SIMDIR"/group_*/; do
-    [ ! -d "$gdir" ] && continue
-    g=$(basename "$gdir" | sed 's/group_//')
-    for mdir in "$gdir"Dataset_Mut_*pct/; do
-        [ ! -d "$mdir" ] && continue
-        mut=$(basename "$mdir" | sed 's/Dataset_Mut_//' | sed 's/pct$//')
-        NAME="group${g}_mut${mut}"
+MODE=""
+# 先检测平坦模式
+for f in "$SIMDIR"/*_R1.fastq.gz; do
+    [ -f "$f" ] || continue
+    MODE="FLAT"
+    base=$(basename "$f" _R1.fastq.gz)
+    NAME="$base"
+    DONE="${OUTDIR}/${NAME}/.DONE"
+    [ -f "$DONE" ] && { log "[$NAME] Skip (.DONE)"; continue; }
+    ALL_TASKS+=("$NAME|$f")
+done
+
+# 未命中则检测嵌套模式 (单个病毒 LoD_mix 输出)
+if [ -z "$MODE" ]; then
+    for f in "$SIMDIR"/*_depth*_rep*/Host_Depletion_Mixed_PE_R1.fastq.gz; do
+        [ -f "$f" ] || continue
+        MODE="NESTED"
+        sdir=$(dirname "$f")
+        NAME=$(basename "$sdir")
         DONE="${OUTDIR}/${NAME}/.DONE"
         [ -f "$DONE" ] && { log "[$NAME] Skip (.DONE)"; continue; }
-        INPUT="${mdir}Jackknife_Subsamples"
-        [ ! -d "$INPUT" ] && { log "[$NAME] No Jackknife_Subsamples"; continue; }
-        ALL_TASKS+=("$NAME|$INPUT")
+        ALL_TASKS+=("$NAME|$f")
     done
-done
+fi
+
+# 仍未命中则回退旧分组结构
+if [ -z "$MODE" ]; then
+    for gdir in "$SIMDIR"/group_*/; do
+        [ ! -d "$gdir" ] && continue
+        g=$(basename "$gdir" | sed 's/group_//')
+        for mdir in "$gdir"Dataset_Mut_*pct/; do
+            [ ! -d "$mdir" ] && continue
+            mut=$(basename "$mdir" | sed 's/Dataset_Mut_//' | sed 's/pct$//')
+            MODE="OLD"
+            NAME="group${g}_mut${mut}"
+            DONE="${OUTDIR}/${NAME}/.DONE"
+            [ -f "$DONE" ] && { log "[$NAME] Skip (.DONE)"; continue; }
+            INPUT="${mdir}Jackknife_Subsamples"
+            [ ! -d "$INPUT" ] && { log "[$NAME] No Jackknife_Subsamples"; continue; }
+            ALL_TASKS+=("$NAME|$INPUT")
+        done
+    done
+fi
 
 TOTAL=${#ALL_TASKS[@]}
 if [ "$TOTAL" -eq 0 ]; then
@@ -125,15 +159,28 @@ for ((i=0; i<TOTAL; i+=BATCH)); do
         log "  [$NAME] Start"
         (
             t0=$(date +%s)
+            # Flat/Nested mode: INPUT is R1 file path, link R1+R2 to temp dir
+            if [ "$MODE" = "FLAT" ] || [ "$MODE" = "NESTED" ]; then
+                R1="$INPUT"
+                R2="${R1/_R1.fastq.gz/_R2.fastq.gz}"
+                SIPDIR="/tmp/asm_input_${NAME}"
+                mkdir -p "$SIPDIR"
+                ln -sf "$(realpath "$R1")" "$SIPDIR/${NAME}_R1.fastq.gz"
+                [ -f "$R2" ] && ln -sf "$(realpath "$R2")" "$SIPDIR/${NAME}_R2.fastq.gz"
+                ASM_INPUT="$SIPDIR"
+            else
+                ASM_INPUT="$INPUT"
+            fi
             /usr/bin/time -v -o "${LOGDIR}/${NAME}.time" \
-                python ~/bin/assembly_pipeline.py \
-                    -t all -i "$INPUT" -l 200 \
-                    -o "${OUTDIR}/${NAME}/" \
+                python "$BIN_DIR/assembly_pipeline.py" \
+                    -t all -i "$ASM_INPUT" -l 200 \
+                    -o "${OUTDIR}" \
                     --tmp-dir "/tmp/asm_${NAME}" \
                     --jobs "$JOBS" --threads "$THREADS" \
                     --refineC_split --refineC_merge --refineC_min_id 0.95 \
                     --keep-temp --log_dirs "${LOGDIR}" \
                 > "${LOGDIR}/${NAME}.log" 2>&1
+            [ -d "/tmp/asm_input_${NAME}" ] && rm -rf "/tmp/asm_input_${NAME}"
             ret=$?
             t1=$(date +%s)
             mem=$(grep "Maximum resident set size" "${LOGDIR}/${NAME}.time" 2>/dev/null | awk '{print $NF}')
@@ -144,6 +191,7 @@ for ((i=0; i<TOTAL; i+=BATCH)); do
                 log "  [$NAME] FAIL (exit: $ret)"
             fi
         ) &
+
     done
     wait
     log "=== Batch $N done ==="
@@ -160,14 +208,14 @@ fi
 log "=== Phase 2: 7-way RefineC merge (jobs=$MERGE_JOBS) ==="
 
 MERGE_TASKS=()
-for gdir in "$OUTDIR"/group*_mut*/; do
-    [ ! -d "$gdir" ] && continue
-    for sdir in "$gdir"Master_*rep1/; do
-        [ ! -d "$sdir" ] && continue
+for sdir in "$OUTDIR"/*/; do
+    [ ! -d "$sdir" ] && continue
+    # Skip non-sample dirs
+    sbase=$(basename "$sdir")
+    case "$sbase" in *_merge|*_logs|tmp_*) continue ;; esac
         [ -f "$sdir/.merge_7way_done" ] && continue
         SDIR="$sdir"; SNAME=$(basename "$sdir")
         MERGE_TASKS+=("$SDIR|$SNAME")
-    done
 done
 
 log "Merge tasks: ${#MERGE_TASKS[@]}"
@@ -193,14 +241,11 @@ else
                 [ ! -f "$MH_DIR/${SNAME}_MH_merge.merged.fasta" ] && {
                     mkdir -p "$MH_DIR"
                     cat "$M" "$H" > "$MH_DIR/combined.fasta"
-                    /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MH_DIR/${SNAME}_MH_mmseqs.merge.time.mem.log" \
-                        mmseqs easy-linclust "$MH_DIR/combined.fasta" "$MH_DIR/${SNAME}_MH_merge_cluster" "$MH_DIR/mmseqs_tmp" \
-                            --cluster-mode 2 --min-seq-id 0.95 --threads "$THREADS" --cov-mode 1 -c 0.85 > "$MH_DIR/mmseqs.log" 2>&1
                     /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MH_DIR/${SNAME}_MH_refinec.merge.time.mem.log" \
-                        refineC merge --threads "$THREADS" --contigs "$MH_DIR/${SNAME}_MH_merge_cluster_rep_seq.fasta" \
-                            --prefix "${SNAME}_MH_merge" --output "$MH_DIR/${SNAME}_MH_merge" \
-                            --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$MH_DIR/refinec.log" 2>&1
-                    [ -f "$MH_DIR/${SNAME}_MH_merge.merged.fasta.gz" ] && unpigz -f "$MH_DIR/${SNAME}_MH_merge.merged.fasta.gz"
+                        refineC merge --threads "$THREADS" --contigs "$MH_DIR/combined.fasta" \
+                            --prefix "${SNAME}_MH_merge" --output "$SDIR/${SNAME}_MH_merge" \
+                            --glob-cls-id '0.95' --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$MH_DIR/refinec.log" 2>&1
+                    [ -f "$SDIR/${SNAME}_MH_merge.merged.fasta.gz" ] && unpigz -f "$SDIR/${SNAME}_MH_merge.merged.fasta.gz"
                 } &
 
                 # ===== MH split+merge =====
@@ -211,14 +256,11 @@ else
                     if [ -n "$S1" ] || [ -n "$S2" ]; then
                         mkdir -p "$MHSP_DIR"
                         zcat $S1 $S2 2>/dev/null > "$MHSP_DIR/combined.fasta"
-                        /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MHSP_DIR/${SNAME}_MH_split_mmseqs.merge.time.mem.log" \
-                            mmseqs easy-linclust "$MHSP_DIR/combined.fasta" "$MHSP_DIR/${SNAME}_MH_split_merge_cluster" "$MHSP_DIR/mmseqs_tmp" \
-                                --cluster-mode 2 --min-seq-id 0.95 --threads "$THREADS" --cov-mode 1 -c 0.85 > "$MHSP_DIR/mmseqs.log" 2>&1
                         /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$MHSP_DIR/${SNAME}_MH_split_refinec.merge.time.mem.log" \
-                            refineC merge --threads "$THREADS" --contigs "$MHSP_DIR/${SNAME}_MH_split_merge_cluster_rep_seq.fasta" \
-                                --prefix "${SNAME}_MH_split_merge" --output "$MHSP_DIR/${SNAME}_MH_split_merge" \
-                                --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$MHSP_DIR/refinec.log" 2>&1
-                        [ -f "$MHSP_DIR/${SNAME}_MH_split_merge.merged.fasta.gz" ] && unpigz -f "$MHSP_DIR/${SNAME}_MH_split_merge.merged.fasta.gz"
+                            refineC merge --threads "$THREADS" --contigs "$MHSP_DIR/combined.fasta" \
+                                --prefix "${SNAME}_MH_split_merge" --output "$SDIR/${SNAME}_MH_split_merge" \
+                               --glob-cls-id '0.95' --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$MHSP_DIR/refinec.log" 2>&1
+                        [ -f "$SDIR/${SNAME}_MH_split_merge.merged.fasta.gz" ] && unpigz -f "$SDIR/${SNAME}_MH_split_merge.merged.fasta.gz"
                     fi
                 } &
 
@@ -227,14 +269,11 @@ else
                 [ ! -f "$ALL_DIR/${SNAME}_ALL_merge.merged.fasta" ] && {
                     mkdir -p "$ALL_DIR"
                     cat "$M" "$H" ${P:+"$P"} > "$ALL_DIR/combined.fasta"
-                    /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$ALL_DIR/${SNAME}_ALL_merge.mmseqs.time.mem.log" \
-                        mmseqs easy-linclust "$ALL_DIR/combined.fasta" "$ALL_DIR/${SNAME}_ALL_merge_cluster" "$ALL_DIR/mmseqs_tmp" \
-                            --cluster-mode 2 --min-seq-id 0.95 --threads "$THREADS" --cov-mode 1 -c 0.85 > "$ALL_DIR/mmseqs.log" 2>&1
                     /usr/bin/time -f "Time:%e seconds\nMemory:%M KB\nCPU:%P" -o "$ALL_DIR/${SNAME}_ALL_merge.refinec.time.mem.log" \
-                        refineC merge --threads "$THREADS" --contigs "$ALL_DIR/${SNAME}_ALL_merge_cluster_rep_seq.fasta" \
-                            --prefix "${SNAME}_ALL_merge" --output "$ALL_DIR/${SNAME}_ALL_merge" \
-                            --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$ALL_DIR/refinec.log" 2>&1
-                    [ -f "$ALL_DIR/${SNAME}_ALL_merge.merged.fasta.gz" ] && unpigz -f "$ALL_DIR/${SNAME}_ALL_merge.merged.fasta.gz"
+                        refineC merge --threads "$THREADS" --contigs "$ALL_DIR/combined.fasta" \
+                            --prefix "${SNAME}_ALL_merge" --output "$SDIR/${SNAME}_ALL_merge" \
+                          --glob-cls-id '0.95'  --min-id "$MIN_ID" --min-cov "$MIN_COV" > "$ALL_DIR/refinec.log" 2>&1
+                    [ -f "$SDIR/${SNAME}_ALL_merge.merged.fasta.gz" ] && unpigz -f "$SDIR/${SNAME}_ALL_merge.merged.fasta.gz"
                 } &
 
                 wait; touch "$DONE_MARK"; echo "  [$SNAME] done"
@@ -249,28 +288,24 @@ log "=== Phase 2 done. ==="
 
 # 阶段2资源汇总
 MERGE_SUMMARY="$LOGDIR/merge_resource_summary.tsv"
-echo -e "Sample\tMH_mmseqs_time(s)\tMH_mmseqs_mem(MB)\tMH_mmseqs_CPU%\tMH_refinec_time(s)\tMH_refinec_mem(MB)\tMH_refinec_CPU%\tMHSP_mmseqs_time(s)\tMHSP_mmseqs_mem(MB)\tMHSP_mmseqs_CPU%\tMHSP_refinec_time(s)\tMHSP_refinec_mem(MB)\tMHSP_refinec_CPU%\tALL_mmseqs_time(s)\tALL_mmseqs_mem(MB)\tALL_mmseqs_CPU%\tALL_refinec_time(s)\tALL_refinec_mem(MB)\tALL_refinec_CPU%" > "$MERGE_SUMMARY"
+echo -e "Sample\tMH_refinec_time(s)\tMH_refinec_mem(MB)\tMH_refinec_CPU%\tMHSP_refinec_time(s)\tMHSP_refinec_mem(MB)\tMHSP_refinec_CPU%\tALL_refinec_time(s)\tALL_refinec_mem(MB)\tALL_refinec_CPU%" > "$MERGE_SUMMARY"
 
-for sdir in "$OUTDIR"/group*_mut*/Master_*rep1/; do
+for sdir in "$OUTDIR"/*/; do
+    sbase=$(basename "$sdir")
+    case "$sbase" in *_merge|*_logs|tmp_*) continue ;; esac
     [ ! -d "$sdir" ] && continue
     SNAME=$(basename "$sdir")
     parse_tmm() { grep "$1" "$2" 2>/dev/null | grep -oP '[0-9.]+' || echo "0"; }
 
-    MH_MM="$sdir/${SNAME}_MH_merge/${SNAME}_MH_mmseqs.merge.time.mem.log"
     MH_RC="$sdir/${SNAME}_MH_merge/${SNAME}_MH_refinec.merge.time.mem.log"
-    MHSP_MM="$sdir/${SNAME}_MH_split_merge/${SNAME}_MH_split_mmseqs.merge.time.mem.log"
     MHSP_RC="$sdir/${SNAME}_MH_split_merge/${SNAME}_MH_split_refinec.merge.time.mem.log"
-    ALL_MM="$sdir/${SNAME}_ALL_merge/${SNAME}_ALL_mmseqs.merge.time.mem.log"
-    ALL_RC="$sdir/${SNAME}_ALL_merge/${SNAME}_ALL_refinec.merge.time.mem.log"
+	ALL_RC="$sdir/${SNAME}_ALL_merge/${SNAME}_ALL_merge.refinec.time.mem.log"
 
-    MH_MM_T=$(parse_tmm "Time:" "$MH_MM"); MH_MM_M_KB=$(parse_tmm "Memory:" "$MH_MM"); MH_MM_C=$(parse_tmm "CPU:" "$MH_MM")
     MH_RC_T=$(parse_tmm "Time:" "$MH_RC"); MH_RC_M_KB=$(parse_tmm "Memory:" "$MH_RC"); MH_RC_C=$(parse_tmm "CPU:" "$MH_RC")
-    MHSP_MM_T=$(parse_tmm "Time:" "$MHSP_MM"); MHSP_MM_M_KB=$(parse_tmm "Memory:" "$MHSP_MM"); MHSP_MM_C=$(parse_tmm "CPU:" "$MHSP_MM")
     MHSP_RC_T=$(parse_tmm "Time:" "$MHSP_RC"); MHSP_RC_M_KB=$(parse_tmm "Memory:" "$MHSP_RC"); MHSP_RC_C=$(parse_tmm "CPU:" "$MHSP_RC")
-    ALL_MM_T=$(parse_tmm "Time:" "$ALL_MM"); ALL_MM_M_KB=$(parse_tmm "Memory:" "$ALL_MM"); ALL_MM_C=$(parse_tmm "CPU:" "$ALL_MM")
     ALL_RC_T=$(parse_tmm "Time:" "$ALL_RC"); ALL_RC_M_KB=$(parse_tmm "Memory:" "$ALL_RC"); ALL_RC_C=$(parse_tmm "CPU:" "$ALL_RC")
 
-    echo -e "$SNAME\t$MH_MM_T\t$(echo "scale=2; $MH_MM_M_KB/1024"|bc 2>/dev/null||echo 0)\t$MH_MM_C\t$MH_RC_T\t$(echo "scale=2; $MH_RC_M_KB/1024"|bc 2>/dev/null||echo 0)\t$MH_RC_C\t$MHSP_MM_T\t$(echo "scale=2; $MHSP_MM_M_KB/1024"|bc 2>/dev/null||echo 0)\t$MHSP_MM_C\t$MHSP_RC_T\t$(echo "scale=2; $MHSP_RC_M_KB/1024"|bc 2>/dev/null||echo 0)\t$MHSP_RC_C\t$ALL_MM_T\t$(echo "scale=2; $ALL_MM_M_KB/1024"|bc 2>/dev/null||echo 0)\t$ALL_MM_C\t$ALL_RC_T\t$(echo "scale=2; $ALL_RC_M_KB/1024"|bc 2>/dev/null||echo 0)\t$ALL_RC_C" >> "$MERGE_SUMMARY"
+    echo -e "$SNAME\t$MH_RC_T\t$(echo "scale=2; $MH_RC_M_KB/1024"|bc 2>/dev/null||echo 0)\t$MH_RC_C\t$MHSP_RC_T\t$(echo "scale=2; $MHSP_RC_M_KB/1024"|bc 2>/dev/null||echo 0)\t$MHSP_RC_C\t$ALL_RC_T\t$(echo "scale=2; $ALL_RC_M_KB/1024"|bc 2>/dev/null||echo 0)\t$ALL_RC_C" >> "$MERGE_SUMMARY"
 done
 
 log "Merge resource summary: $MERGE_SUMMARY ($(wc -l < "$MERGE_SUMMARY") lines)"

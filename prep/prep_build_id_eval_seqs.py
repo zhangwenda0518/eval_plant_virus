@@ -191,7 +191,7 @@ def generate_negative_C_eve(eve_seqs, pos_records, out_dir, n, rng):
         frag_len = min(target_len, len(chosen_seq) - 5)
         frag_len = max(200, frag_len)
         start = rng.randint(0, max(1, len(chosen_seq) - frag_len))
-        frag = chosen_seq[start:start + frag_len)
+        frag = chosen_seq[start:start + frag_len]
 
         seq_id = f"negative_C|negC_{i:04d}|source={chosen_id}"
         rec = SeqRecord(Seq(frag), id=seq_id, description="")

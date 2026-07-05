@@ -6,6 +6,7 @@
 # 用法: bash run_eval_classification.sh [options]
 # ============================================================
 set -e
+BIN_DIR="$(cd "$(dirname "$0")/.." && pwd)/deps"
 
 LOGDIR="step9_logs"
 OUTDIR="step9_classification"
@@ -14,38 +15,44 @@ META="step4_classification_eval/test_metadata.tsv"
 MMSEQS_DB="$HOME/database/virus-db/RVDB-v31/RVDB.mmseqs_db/RVDB.mmseqs"
 VITAP_DB="$HOME/database/virus-db/vitap-db/VMR-MSL40_DB"
 ACVIRUS_DB="$HOME/database/virus-db/acvirus_db"
+VCONTACT3_DB="$HOME/database/virus-db/vConTACT3_db"
+TOOLS="mmseqs,acvirus,vitap,vcontact3"
 THREADS=32
 JOBS=3
 
 show_help() {
     echo "Usage: bash run_eval_classification.sh [options]"
     echo ""
-    echo "  合并 test_sequences/ 下所有 .fasta 为单文件，一次运行三种分类器 + 整合"
+    echo "  合并 test_sequences/ 下所有 .fasta 为单文件，一次运行四种分类器 + 整合"
     echo ""
     echo "Options:"
-    echo "  --test-dir DIR      测试序列目录 (default: step4_classification_eval/test_sequences)"
-    echo "  --meta FILE         测试真值 TSV"
-    echo "  --output-dir DIR    输出目录"
-    echo "  --mmseqs-db DIR     MMseqs2 数据库"
-    echo "  --vitap-db DIR      VITAP 数据库"
-    echo "  --acvirus-db DIR    ACVirus 数据库"
-    echo "  --threads N         线程 (default: 32)"
-    echo "  --jobs N            并发 (default: 3)"
+    echo "  --test-dir DIR       测试序列目录 (default: step4_classification_eval/test_sequences)"
+    echo "  --meta FILE          测试真值 TSV"
+    echo "  --output-dir DIR     输出目录"
+    echo "  --mmseqs-db DIR      MMseqs2 数据库"
+    echo "  --vitap-db DIR       VITAP 数据库"
+    echo "  --acvirus-db DIR     ACVirus 数据库"
+    echo "  --vcontact3-db DIR   vConTACT3 数据库"
+    echo "  --tools LIST         工具列表 (default: mmseqs,acvirus,vitap,vcontact3)"
+    echo "  --threads N          线程 (default: 32)"
+    echo "  --jobs N             并发 (default: 3)"
     exit 0
 }
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --test-dir)   TEST_DIR="$2"; shift 2 ;;
-        --meta)       META="$2"; shift 2 ;;
-        --output-dir) OUTDIR="$2"; shift 2 ;;
-        --logdir)     LOGDIR="$2"; shift 2 ;;
-        --mmseqs-db)  MMSEQS_DB="$2"; shift 2 ;;
-        --vitap-db)   VITAP_DB="$2"; shift 2 ;;
-        --acvirus-db) ACVIRUS_DB="$2"; shift 2 ;;
-        --threads)    THREADS="$2"; shift 2 ;;
-        --jobs)       JOBS="$2"; shift 2 ;;
-        -h|--help)    show_help ;;
+        --test-dir)      TEST_DIR="$2"; shift 2 ;;
+        --meta)          META="$2"; shift 2 ;;
+        --output-dir)    OUTDIR="$2"; shift 2 ;;
+        --logdir)        LOGDIR="$2"; shift 2 ;;
+        --mmseqs-db)     MMSEQS_DB="$2"; shift 2 ;;
+        --vitap-db)      VITAP_DB="$2"; shift 2 ;;
+        --acvirus-db)    ACVIRUS_DB="$2"; shift 2 ;;
+        --vcontact3-db)  VCONTACT3_DB="$2"; shift 2 ;;
+        --tools)         TOOLS="$2"; shift 2 ;;
+        --threads)       THREADS="$2"; shift 2 ;;
+        --jobs)          JOBS="$2"; shift 2 ;;
+        -h|--help)       show_help ;;
         *) echo "Unknown: $1"; show_help ;;
     esac
 done
@@ -73,17 +80,18 @@ DONE="${CLASSIFY_DIR}/.DONE"
 if [ -f "$DONE" ]; then
     log "[classify] Skip (.DONE)"
 else
-    log "[classify] Running MMseqs2 + VITAP + ACVirus on merged FASTA..."
+    log "[classify] Running tools: $TOOLS on merged FASTA..."
     t0=$(date +%s)
     /usr/bin/time -v -o "$LOGDIR/classify.time" \
-        python ~/bin/virus_classifier.py \
+        python "$BIN_DIR/virus_classifier.py" \
             -i "$MERGED_DIR" --ext .fasta \
             -j "$JOBS" -p "$THREADS" \
-            -t mmseqs,acvirus,vitap \
+            -t "$TOOLS" \
             --output-dir "$CLASSIFY_DIR/" \
             --vitap-db "$VITAP_DB" \
             --mmseqs-db "$MMSEQS_DB" \
             --acvirus-db "$ACVIRUS_DB" \
+            --vcontact3-db "$VCONTACT3_DB" \
         > "$LOGDIR/classify.log" 2>&1
     ret=$?; t1=$(date +%s)
     mem=$(grep "Maximum resident set size" "$LOGDIR/classify.time" 2>/dev/null | awk '{print $NF}')
@@ -102,9 +110,25 @@ DONE="${INTEGRATE_DIR}/.DONE"
 if [ -f "$DONE" ]; then
     log "[integrate] Skip (.DONE)"
 else
-    MM=$(ls "${CLASSIFY_DIR}/mmseqs_results/"*_lca.tsv 2>/dev/null | head -1)
-    VT=$(ls "${CLASSIFY_DIR}/VITAP_results/"*.best_determined_lineages.tsv 2>/dev/null | head -1)
-    AC=$(ls "${CLASSIFY_DIR}/ACVirus_results/"*.final_result.tsv 2>/dev/null | head -1)
+    MM=$(ls "${CLASSIFY_DIR}/"*"/mmseqs_results/"*_lca.tsv 2>/dev/null | head -1)
+    if [ -z "$MM" ]; then
+        MM=$(ls "${CLASSIFY_DIR}/mmseqs_results/"*_lca.tsv 2>/dev/null | head -1)
+    fi
+    VT=$(ls "${CLASSIFY_DIR}/"*"/VITAP_results/"*".vitap/best_determined_lineages.tsv" 2>/dev/null | head -1)
+    if [ -z "$VT" ]; then
+        VT=$(ls "${CLASSIFY_DIR}/VITAP_results/"*".vitap/best_determined_lineages.tsv" 2>/dev/null | head -1)
+    fi
+    if [ -z "$VT" ]; then
+        VT=$(ls "${CLASSIFY_DIR}/VITAP_results/"*".best_determined_lineages.tsv" 2>/dev/null | head -1)
+    fi
+    AC=$(ls "${CLASSIFY_DIR}/"*"/ACVirus_results/"*".acvirus/final_result.tsv" 2>/dev/null | head -1)
+    if [ -z "$AC" ]; then
+        AC=$(ls "${CLASSIFY_DIR}/ACVirus_results/"*".acvirus/final_result.tsv" 2>/dev/null | head -1)
+    fi
+    if [ -z "$AC" ]; then
+        AC=$(ls "${CLASSIFY_DIR}/ACVirus_results/"*".final_result.tsv" 2>/dev/null | head -1)
+    fi
+    VC=$(find "${CLASSIFY_DIR}" -name "final_assignments.csv" | head -1)
 
     if [ -z "$MM" ] || [ -z "$VT" ] || [ -z "$AC" ]; then
         log "[integrate] Missing results (MM=$MM VT=$VT AC=$AC)"
@@ -113,12 +137,7 @@ else
 
     log "[integrate] Running virus_classifier_analysis13.R ..."
     t0=$(date +%s)
-    Rscript ~/bin/virus_classifier_analysis13.R \
-        --mmseqs "$MM" \
-        --vitap "$VT" \
-        --acvirus "$AC" \
-        -o "$INTEGRATE_DIR/" \
-        > "$LOGDIR/integrate.log" 2>&1
+	Rscript "$BIN_DIR/virus_classifier_analysis14.R"    --mmseqs "$MM"    --vitap "$VT"    --acvirus "$AC" --vcontact3 "$VC"   --cores "$THREADS"    -o "$INTEGRATE_DIR/"    > "$LOGDIR/integrate.log" 2>&1
     ret=$?; t1=$(date +%s)
     if [ $ret -eq 0 ]; then
         mkdir -p "$INTEGRATE_DIR"; touch "$DONE"
