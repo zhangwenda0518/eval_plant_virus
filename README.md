@@ -124,17 +124,14 @@ python metrics/calc_abundance_accuracy.py --predictions quant.tsv --gold gold.ts
 python metrics/calc_classification_stratified.py --predictions integrated.tsv --meta test_meta.tsv --out stratified/
 ```
 
-## 四个评估环节
+## 七个评估环节
 
-| 评估 | 问题 | 主要指标 | 统计方法 |
-|------|------|---------|---------|
-| 评估一：已知病毒检测 | 比对 vs 准映射 vs k-mer 孰优孰劣？ | F1/LoD/丰度准确性(Bray-Curtis,RMSE,Spearman) | Friedman+Nemenyi |
-| 评估二：病毒组装 | MEGAHIT vs SPAdes vs Penguin，分开 vs 合并？ | Genome fraction/NGA50/嵌合率/完全组装比 | Wilcoxon |
-| 评估三：候选病毒鉴定 | 三种搜索原理互补性？对抗策略效果？ | AUPRC/Precision/Recall/F1 | — |
-| 评估四：病毒分类 | MMseqs2 vs VITAP vs ACVirus？整合增益？ | 分覆盖度分层科/属/种准确率 | Cochran's Q+McNemar |
-
-## 附加评估
-
-- **宿主过滤消融实验**：Kraken2/HISAT2/RiboDetector 各步骤独立贡献
-- **嵌合体率检测**：组装质量交叉验证指标
-- **覆盖度梯度分层**：分类工具在不同序列完整度下的表现
+| 评估 | 调度脚本 | 问题 | 主要指标 |
+|------|---------|------|---------|
+| 评估一：宿主过滤消融 | `run_eval_host_depletion.sh` | Kraken2/HISAT2 各步骤独立贡献？ | 病毒保留率/宿主去除率/资源消耗 |
+| 评估二：已知病毒检测 | `run_eval_known_virus.sh` | 比对 vs 准映射 vs k-mer 孰优？ | F1/LoD/丰度准确性(Bray-Curtis,RMSE,Spearman) |
+| 评估三：病毒组装 | `run_eval_assembly.sh` | MEGAHIT vs SPAdes vs Penguin？ | Genome fraction/NGA50/嵌合率 |
+| 评估四：候选病毒鉴定 | `run_eval_identification.sh` | 多原理互补性？对抗策略效果？ | AUPRC/Precision/Recall/F1 |
+| 评估五：病毒分类 | `run_eval_classification.sh` | MMseqs2 vs VITAP vs ACVirus？ | 分覆盖度分层科/属/种准确率 |
+| 评估六：序列去重聚类 | `run_dedup_clustering.sh` | mmseqs vs vclust 多种模式？ | ARI/V-measure/NMI |
+| 评估七：宿主分类基准 | `run_eval_host_prediction.sh` | RNAVirHost/PhaBOX2/ICTV 集成？ | Precision/Recall/F1/Accuracy |

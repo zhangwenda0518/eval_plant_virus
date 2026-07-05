@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# 序列去冗余聚类评估 — 统一运行脚本
+# 评估六：序列去重聚类 — 统一运行脚本
 # 金标准: 每条片段 ID 中的物种名 (如 NC_002030_mut0pct_len50pct_f1 → NC_002030)
 #
 # 用法: bash run_dedup_clustering.sh --input step2_dedup_fragments.fasta --outdir step3_dedup_cluster/
